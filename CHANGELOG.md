@@ -6,6 +6,12 @@ All notable changes to claude-lens. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The store closes its SQLite connection when it refuses a database (newer schema, not a
+  SQLite file); Python 3.13 reported the leak as a `ResourceWarning`.
+- CI pins `astral-sh/setup-uv` to `v10.3.0` (no floating major tag exists).
+
 ## [0.1.0] - 2026-10-16
 
 First release. Everything runs locally; prompt contents are never stored.
