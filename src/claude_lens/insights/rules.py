@@ -17,6 +17,11 @@ from pydantic import BaseModel, ConfigDict
 from claude_lens.analysis.cache import CacheDoctorReport
 from claude_lens.insights.models import Confidence, Insight, SavingsKind
 from claude_lens.insights.stats import SessionStats, is_big_model
+
+# Shared with the live nudges; re-exported so rules.X keeps working.
+from claude_lens.insights.thresholds import KITCHEN_SINK_PEAK_TOKENS as KITCHEN_SINK_PEAK_TOKENS
+from claude_lens.insights.thresholds import KITCHEN_SINK_PROMPTS as KITCHEN_SINK_PROMPTS
+from claude_lens.insights.thresholds import NEAR_LIMIT_SHARE as NEAR_LIMIT_SHARE
 from claude_lens.insights.whatif import reprice
 from claude_lens.models import RequestRecord
 from claude_lens.pricing import Pricing, normalize_model
@@ -51,10 +56,7 @@ HIGH_EFFORTS = frozenset({"high", "xhigh", "max"})
 THINKING_HEAVY_SHARE = 0.4
 # Assumed share of thinking tokens a lower effort saves; only an order of magnitude.
 EFFORT_THINKING_REDUCTION = 0.5
-KITCHEN_SINK_PROMPTS = 8
-KITCHEN_SINK_PEAK_TOKENS = 150_000
 CONTEXT_BASELINE_TOKENS = 50_000
-NEAR_LIMIT_SHARE = 0.6
 STRUGGLE_INTERRUPTIONS = 3
 PLAN_MODE_MIN_FILES = 5
 EXPLORATION_MIN_READS = 25
