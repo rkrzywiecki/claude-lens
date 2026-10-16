@@ -9,7 +9,9 @@ src/claude_lens/
 ├── pricing.py              # pricing.yaml -> cost of one request, context window
 ├── data/pricing.yaml       # bundled list prices
 ├── fingerprint.py          # content-free hashes: prompt segments, tool inputs, file targets
-├── store.py                # SQLite store (requests, tool_calls, session_meta, imported_files)
+├── store.py                # SQLite store (requests, tool_calls, session_meta, session_outcomes,
+│                           #        imported_files)
+├── outcomes.py             # git outcomes: read-only git log per session window, cost per commit
 ├── importers/
 │   ├── records.py          # one transcript entry -> RequestRecord (no store, no logging)
 │   └── claude_code.py      # Claude Code transcripts -> RequestRecord
@@ -68,7 +70,11 @@ src/claude_lens/
    and can hand the aggregated result to the coach. See [insights.md](insights.md).
    `insights/trends.py` loads each week (or the previous range) the same way and measures it
    with the rules' own predicates. See [trends.md](trends.md).
-7. `queries.py` is the one place that turns filters into those results; `cli.py` renders them
+7. `outcomes.py` maps each session's project directory to its git repository and reads the
+   commits made in the session window (read-only `git log`, cached by the repository's refs);
+   only counts are stored. Reports, insights, the coach and the dashboard read them from the
+   store. See [outcomes.md](outcomes.md).
+8. `queries.py` is the one place that turns filters into those results; `cli.py` renders them
    with rich, `web/app.py` serves them as JSON to the dashboard. See [dashboard.md](dashboard.md).
 
 ## Decisions

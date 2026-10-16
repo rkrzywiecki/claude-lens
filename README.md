@@ -7,7 +7,9 @@ and the **prompt-cache hit ratio** by day, project, model or session. The **cach
 requests that missed the prompt cache and says why and what it cost, **loop detection** flags
 agents repeating themselves, **insights** turn all of it into recommendations (which model and
 effort to use, how to keep context small, which best practices you follow), optionally with a
-plan written by Claude, and a local **dashboard** shows it all on one page.
+plan written by Claude, and a local **dashboard** shows it all on one page. For sessions in a
+git repository, **outcomes** add the commits made during the session, so cost can be read as
+cost per commit (a rough proxy for kept work, not for quality).
 
 It is the observability companion to [claude-guard](https://github.com/rkrzywiecki/claude-guard).
 claude-guard decides what may pass; claude-lens only watches, never blocks, and never changes
@@ -20,6 +22,7 @@ flowchart LR
     S --> R["report.py, analysis/, insights/<br/>(cache doctor, loops, sessions,<br/>recommendations, practices)"]
     R -.->|"--coach: aggregates only"| CO["Claude API (coach)"]
     P[pricing.yaml] --> R
+    G["git log (read-only)<br/>commits per session"] -->|"outcomes.py: counts only"| S
     R --> C["CLI: report, cache-doctor,<br/>loops, session (table or --json)"]
     R --> D["claude-lens dashboard :8789"]
     CL["Claude Code / SDK<br/>ANTHROPIC_BASE_URL"] --> X["claude-lens serve :8788<br/>(proxy/app.py)"]
@@ -61,6 +64,7 @@ uv run claude-lens report --by project --days 7
 uv run claude-lens report --by session --top 10
 uv run claude-lens report --by model --since 2026-10-01 --until 2026-10-15
 uv run claude-lens report --project claude-guard --json
+uv run claude-lens report --outcomes --by model   # commits, lines, cost per commit (git repos)
 uv run claude-lens cache-doctor --days 30     # prompt-cache misses, causes, avoidable cost
 uv run claude-lens loops --days 30            # repeated calls, error streaks, file churn
 uv run claude-lens insights --days 30         # recommendations and best-practice scorecard
@@ -164,6 +168,29 @@ effort.
 the same length before it) to the report and, as aggregates, to the coach's input, so the coach
 can say what improved. Details: [docs/trends.md](docs/trends.md).
 
+## Outcomes: commits per session
+
+Logs show cost, not results. For each Claude Code session whose project directory is a local git
+repository, `claude-lens` reads the commits made from the session's first request until 30
+minutes after its last one (every branch and worktree, read-only `git log`), and stores the
+number of commits, files changed and lines added and removed. Commit messages, diffs and file
+names are never stored. Results are cached per repository by its refs, so re-runs are cheap.
+
+```bash
+uv run claude-lens report --outcomes --by model      # or --by effort, project, day, session
+uv run claude-lens report --outcomes --no-git        # use stored outcomes, do not run git
+```
+
+The report shows cost per commit, cost per 100 changed lines and sessions that edited files
+without a commit; `session` shows a `Git:` line, `insights` adds rules (costly sessions with
+edits and no commit; cost per commit by model and by effort, with enough samples), the coach
+gets the aggregates, and the dashboard a cost-per-commit tile.
+
+**Commits are a rough proxy for outcome, not quality**: work committed later or by hand is
+missed, and differences between models or effort levels are correlations (harder tasks get
+bigger models). Sessions outside git (notes, research, temporary directories) are left out, not
+counted as failures. Details: [docs/outcomes.md](docs/outcomes.md).
+
 ## Dashboard
 
 ```bash
@@ -263,6 +290,8 @@ Settings come from environment variables (or `.env`):
 | `LENS_COACH_TIMEOUT` | `120` | Coach: timeout in seconds |
 | `LENS_COACH_BACKEND` | `auto` | Coach: `api`, `claude-code` (`claude -p` with your Claude Code login) or `auto` |
 | `LENS_COACH_CLAUDE_BIN` | `claude` | Coach: Claude Code CLI for the `claude-code` backend |
+| `LENS_GIT` | `true` | Outcomes: read commits of sessions in git repositories (`--no-git` per command) |
+| `LENS_GIT_TIMEOUT` | `10` | Outcomes: timeout of each git command in seconds |
 | `LENS_STATE_DIR` | `~/.claude-lens/state` | Live commands: transcript read positions, nudges shown (process env only, not `.env`) |
 
 Prices live in [`src/claude_lens/data/pricing.yaml`](src/claude_lens/data/pricing.yaml) (USD per
@@ -438,6 +467,43 @@ Since last period  2026-10-05 … 2026-10-18 vs 2026-09-21 … 2026-10-04
   Thinking share: 33% → 33% = same
 ```
 
+For outcomes, `scripts/make_outcome_example.py` builds a small git repository with commits at
+fixed dates and three sessions that ran in it, under the git-ignored `examples/outcomes` (the
+paths are absolute, so they are generated on your machine):
+
+```bash
+uv run python scripts/make_outcome_example.py
+export LENS_TRANSCRIPTS_DIR=examples/outcomes/transcripts LENS_DB_PATH=examples/outcomes/demo.db
+uv run claude-lens report --outcomes --by model
+```
+
+```
+Cost and git outcome by main model
+┏━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┓
+┃ Model             ┃ Sessions ┃ Commits ┃ Files ┃ +/- lines ┃ Edits, no commit ┃  Cost ┃ Per commit ┃ Per 100 lines ┃
+┡━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━━━━┩
+│ claude-opus-5-5   │        2 │       2 │     2 │ +120 / -0 │                1 │ $5.17 │      $2.59 │         $4.31 │
+│ claude-sonnet-5-5 │        1 │       1 │     1 │  +25 / -0 │                0 │ $0.16 │      $0.16 │         $0.64 │
+├───────────────────┼──────────┼─────────┼───────┼───────────┼──────────────────┼───────┼────────────┼───────────────┤
+│ Total             │        3 │       3 │     3 │ +145 / -0 │                1 │ $5.34 │      $1.78 │         $3.68 │
+└───────────────────┴──────────┴─────────┴───────┴───────────┴──────────────────┴───────┴────────────┴───────────────┘
+Commits made during a session or 30 minutes after it are a rough proxy for kept work, not for quality; differences
+between models or effort levels are correlations.
+```
+
+One Opus session edited files for $4.19 and committed nothing; `insights` puts it first:
+
+```bash
+uv run claude-lens insights --no-check-files
+```
+
+```
+1. MEDIUM Costly sessions that edited files but made no commit
+   1 session costing $4.19 edited files in a git repository but made no commit during the session or the 30
+minutes after it (1 of 3 editing sessions in git repositories).
+   → Look at these first: an abandoned attempt is spend with nothing kept. ...
+```
+
 ## Tests and quality
 
 ```bash
@@ -476,6 +542,10 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy src
   Code writes it; side calls are missing, as in reports. Cache state without Claude Code's own
   `prompt_cache` data is inferred from timestamps and TTL. Nudges fire once per session, so a
   session that is compacted and grows again is not nudged twice.
+- **Outcomes are a rough proxy.** A commit says work was kept, not that it was good; commits
+  made later, by hand outside the window or in another repository are missed, and model or
+  effort comparisons are correlations. Sessions whose directory is gone or not in git are left
+  out (a removed Claude Code worktree is read from its main repository).
 - Prompt contents are never stored: only ids, timestamps, model, token counts, tool names,
   timings, short hashes of prompt segments and tool inputs, and the file path of file-tool calls.
 - Prices in the bundled table were checked on 2026-10-16 and will go stale; check them against the

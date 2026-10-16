@@ -13,9 +13,9 @@ or `--until`, days are local calendar days.
 **`cannot load pricing`.** The custom table is unreadable, not valid YAML, or has a missing or
 unknown key. The message names the field.
 
-**`database schema version N, expected 2`.** The database was written by a newer claude-lens.
+**`database schema version N, expected 5`.** The database was written by a newer claude-lens.
 Upgrade, or point `LENS_DB_PATH` at a new file and import again (the database holds only derived
-data). Older databases are upgraded in place when opened (version 1 gains the latency columns).
+data). Older databases are upgraded in place when opened (version 1 gains the latency columns, version 5 the git outcomes table).
 
 **Totals differ from Claude Code's own cost.** Expected within a few percent: some API calls are
 not written to transcripts. See [importers.md](importers.md#known-gaps).
@@ -96,3 +96,18 @@ plugin. Keep one: `claude-lens install --no-hook` for the status line only.
 
 **`install` kept my status line.** Claude Code has one status line; claude-lens does not replace
 someone else's unless you pass `--force` (the old file is backed up either way).
+
+**`report --outcomes` shows no sessions, or a session has no `Git:` outcome.** Outcomes need
+the session's project directory to exist and be inside a git work tree; temporary directories
+are skipped, and `git` must be on `PATH`. A removed directory is skipped (except Claude Code
+worktrees under `.claude/worktrees/`, read from the main repository); outcomes stored before
+it was removed are kept. `--no-git` or `LENS_GIT=false` also stop reading.
+
+**A session shows no commits although I committed.** Only commits whose committer date falls
+between the session's first request and 30 minutes after its last one count, by the
+repository's `user.email` when set, merges excluded. A commit inside two overlapping sessions
+counts for the later one. See [outcomes.md](outcomes.md).
+
+**`git` is slow on a large repository.** Each command has a timeout (`LENS_GIT_TIMEOUT`, 10 s);
+a repository that times out is skipped for that run. Results are cached by the repository's
+refs, so only repositories that changed are read again.

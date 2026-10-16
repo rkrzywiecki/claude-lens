@@ -58,6 +58,9 @@ Thresholds are heuristics, defined as constants at the top of `insights/rules.py
 | `api.high_effort_short_answers` | 10+ proxy requests at high effort or above, short output, mostly thinking | 50% of the thinking cost |
 | `api.non_streaming_large_max_tokens` | Non-streaming requests with `max_tokens` above 16,000 | none |
 | `api.batch_candidates` | 50+ non-streaming requests without tools per project and day | 50% of their cost if they can wait, an upper bound |
+| `workflow.edits_without_commit` | A Claude Code session in a git repository costing $2+ edited files and made no commit in its window ([outcomes](outcomes.md)) | none; severity at most medium, confidence low |
+| `model.outcome_cost_per_commit` | Two main models with 5+ git sessions and 5+ commits each differ 1.5x+ in cost per commit | none; info, a correlation |
+| `effort.outcome_cost_per_commit` | The same by the most common effort of a session | none; info, a correlation |
 
 **Severity** follows the saving: high from $5 or 5% of spend in range, medium from $1 or 1%,
 low below that; findings without a saving carry a fixed severity. **Confidence** says how
@@ -74,6 +77,11 @@ low for anything that depends on how a model would behave.
 Recommendations can overlap (a long Opus session can appear under model and context), so the
 total in the header can count the same tokens twice. Logs show cost, never quality: a cheaper
 model or a lower effort is an experiment to run on real tasks.
+
+The outcome rules use the git outcome of each session ([outcomes.md](outcomes.md)): commits
+are a rough proxy for kept work, not for quality, and a gap in cost per commit between models
+or effort levels is a correlation (harder tasks tend to get the bigger setting). The profile
+shows the totals, and the coach payload carries them as aggregates (`git_outcomes`, no paths).
 
 ## Best practices
 

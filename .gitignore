@@ -31,3 +31,4 @@ PROMPTS.md
 *.db
 *.db-wal
 *.db-shm
+/examples/outcomes/

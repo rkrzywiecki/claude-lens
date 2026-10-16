@@ -11,7 +11,8 @@ A single local page over the same queries as the CLI. Opening it imports changed
 - **Filters**, one row at the top: date range (7, 30, 90 days, all) and project. They scope
   everything below.
 - **Totals:** API-equivalent cost, requests, cache hit ratio, cost saved by caching, and the
-  avoidable cache loss of the sessions the cache doctor lists.
+  avoidable cache loss of the sessions the cache doctor lists, and the cost per commit of
+  sessions in git repositories ([outcomes.md](outcomes.md); a rough proxy, not quality).
 - **Recommendations:** the `insights` findings with severity, estimated saving, documentation
   link and the sessions they apply to (click one to open it), the best-practice scorecard, and
   **Ask Claude for a plan** with a language picker (calls the coach; see
@@ -31,6 +32,8 @@ A single local page over the same queries as the CLI. Opening it imports changed
 - **Possible agent loops.** Click a row to open the session.
 - **Session:** prompt tokens per request with cache misses (triangles) and context resets
   (diamonds), and the request timeline. Hover the chart, or focus it and use the arrow keys.
+  Its facts include commits, files, changed lines and cost per commit when the session ran in
+  a git repository.
 
 The page follows the system light or dark mode and works at phone width. It loads no external
 scripts, fonts or styles.
@@ -39,12 +42,12 @@ scripts, fonts or styles.
 
 | Endpoint | Returns |
 |---|---|
-| `GET /api/summary?days=&project=` | Reports by day, model and project, the cache doctor (top 10 sessions), loops, and the list of projects |
+| `GET /api/summary?days=&project=` | Reports by day, model and project, the cache doctor (top 10 sessions), loops, the list of projects, and `outcomes` (git outcome by main model) |
 | `GET /api/sessions/{id}` | `SessionDetail` for a full id or unique prefix; 404 otherwise |
 | `GET /api/insights?days=&project=` | `InsightsReport`: profile, recommendations, practices |
 | `GET /api/trends?weeks=8&project=` | `TrendsReport`: metric definitions, one entry per local ISO week (oldest first), last week's changes; `weeks` 1-104 |
 | `POST /api/coach?days=&project=&lang=` | The coach's plan (`CoachResult`); 503 with the reason when it cannot run |
-| `POST /api/import` | Import statistics |
+| `POST /api/import` | Import statistics; also reads git outcomes unless `LENS_GIT=false` or `dashboard --no-git` |
 | `GET /healthz` | `{"status": "ok"}` |
 
 Paths under the home directory are shown as `~/...`; the project filter accepts that form.
