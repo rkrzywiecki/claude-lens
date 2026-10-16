@@ -11,6 +11,7 @@ src/claude_lens/
 ├── fingerprint.py          # content-free hashes: prompt segments, tool inputs, file targets
 ├── store.py                # SQLite store (requests, tool_calls, session_meta, imported_files)
 ├── importers/
+│   ├── records.py          # one transcript entry -> RequestRecord (no store, no logging)
 │   └── claude_code.py      # Claude Code transcripts -> RequestRecord
 ├── proxy/
 │   ├── app.py              # FastAPI pass-through for /v1/*, /healthz
@@ -23,6 +24,7 @@ src/claude_lens/
 │   └── session.py          # one session: timeline, context growth, misses, loops
 ├── insights/
 │   ├── stats.py            # per-session statistics the rules work on
+│   ├── thresholds.py       # context thresholds shared with the live nudges
 │   ├── rules.py            # recommendations with evidence, savings and documentation links
 │   ├── practices.py        # best-practice scorecard
 │   ├── whatif.py           # reprice recorded tokens on another model
@@ -34,6 +36,12 @@ src/claude_lens/
 │   └── index.html          # the dashboard (vanilla JS, inline SVG charts, no dependencies)
 ├── report.py               # grouping and totals
 ├── render.py               # rich tables
+├── live/
+│   ├── session.py          # incremental transcript reading, state in LENS_STATE_DIR
+│   ├── statusline.py       # `statusline`: context, cost, prompt-cache state
+│   ├── nudges.py           # `hook UserPromptSubmit`: one-time /clear and /compact nudges
+│   └── install.py          # `install`: merge into settings.json with a backup
+├── entry.py                # console script: fast path for statusline and hook
 └── log_config.py           # structlog JSON on stderr
 ```
 
@@ -92,3 +100,7 @@ src/claude_lens/
 - **Forward everything, minus hop-by-hop.** Unlike claude-guard's allowlist, lens forwards all
   request headers except hop-by-hop ones and its own `x-lens-*`, so it never changes what the API
   sees.
+- **Live commands bypass the CLI.** `statusline` and `hook` run on every message and prompt, so
+  `entry.py` dispatches them before Typer, rich and structlog are imported, and
+  `live/session.py` keeps a read offset per transcript instead of importing into SQLite. See
+  [nudges.md](nudges.md).

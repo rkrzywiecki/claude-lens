@@ -77,3 +77,22 @@ fields are read from every file.
 **A recommendation does not fit how I work.** Thresholds are fixed heuristics (see
 [insights.md](insights.md)); treat recommendations as prompts to look, and the savings as the
 price of an experiment.
+
+**The status line shows only `claude-lens`, or no cost.** The JSON on stdin was not valid or had
+no `transcript_path` the command could read. Run it by hand with a payload (see the README
+examples). Without a readable transcript it falls back to Claude Code's own numbers.
+
+**The status line or hook does nothing in another project.** Check the command in
+`settings.json`: it must run from any directory (`install` writes
+`uv run --quiet --project <checkout> claude-lens ...`). Moving the checkout breaks it; run
+`install` again. Live commands ignore `.env`: set `LENS_STATE_DIR` or `LENS_PRICING_PATH` in the
+`env` block of `settings.json`.
+
+**A nudge never comes back.** By design: each nudge is shown once per session. Delete
+`LENS_STATE_DIR/nudges/<session id>.json` to see it again, or start a new session with `/clear`.
+
+**Each nudge appears twice.** The hook is installed both by `claude-lens install` and by the
+plugin. Keep one: `claude-lens install --no-hook` for the status line only.
+
+**`install` kept my status line.** Claude Code has one status line; claude-lens does not replace
+someone else's unless you pass `--force` (the old file is backed up either way).

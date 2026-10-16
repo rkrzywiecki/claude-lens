@@ -28,7 +28,8 @@ flowchart LR
 ```
 
 **Status:** milestones M1-M5 are done: transcript importer and reports, API proxy, cache doctor
-and loop detection, dashboard, insights. See [Roadmap](#roadmap).
+and loop detection, dashboard, insights. Live nudges in Claude Code (status line, prompt hook,
+plugin) are done too. See [Roadmap](#roadmap).
 
 ## Requirements
 
@@ -161,6 +162,28 @@ nothing from the network. It has no authentication: it binds to loopback, answer
 loopback `Host` headers, and its POST actions (import, coach) require a header other sites cannot
 send. Details: [docs/dashboard.md](docs/dashboard.md).
 
+## Live nudges in Claude Code
+
+Reports explain waste afterwards; the live commands show it while you work:
+
+```bash
+uv run claude-lens install            # status line + nudge hook in .claude/settings.json
+uv run claude-lens install --user     # the same in ~/.claude/settings.json
+```
+
+- **Status line:** `Opus · ctx 180k/1M (18%) · $0.54 · cache warm 41m left (1h)`: context size
+  and its share of the window, the session's API-equivalent cost so far, and whether the prompt
+  cache is still warm. It reads the session transcript incrementally (about 130 ms per run on a
+  14 MB transcript).
+- **Nudge hook** (`UserPromptSubmit`): once a session has 8+ prompts and 150k+ tokens of
+  context, or fills 60% of the window, Claude Code shows a one-time suggestion to `/rename` +
+  `/clear` or `/compact <focus>`. Same thresholds as `insights`; it never blocks a prompt.
+- **Plugin:** [`plugin/`](plugin/) packages the hook and a `/lens` skill that runs `insights`
+  (`claude plugin validate ./plugin`, then `claude --plugin-dir ./plugin`).
+
+`install` keeps your other settings, backs up the previous file, and leaves a status line that is
+not claude-lens's alone unless `--force`. Details: [docs/nudges.md](docs/nudges.md).
+
 ## API proxy
 
 Transcripts miss some API calls (Claude Code's side requests, such as session titles) and carry no
@@ -221,6 +244,7 @@ Settings come from environment variables (or `.env`):
 | `LENS_COACH_TIMEOUT` | `120` | Coach: timeout in seconds |
 | `LENS_COACH_BACKEND` | `auto` | Coach: `api`, `claude-code` (`claude -p` with your Claude Code login) or `auto` |
 | `LENS_COACH_CLAUDE_BIN` | `claude` | Coach: Claude Code CLI for the `claude-code` backend |
+| `LENS_STATE_DIR` | `~/.claude-lens/state` | Live commands: transcript read positions, nudges shown (process env only, not `.env`) |
 
 Prices live in [`src/claude_lens/data/pricing.yaml`](src/claude_lens/data/pricing.yaml) (USD per
 million tokens). To change or add a model, copy the file, edit it and point `LENS_PRICING_PATH` at
@@ -328,6 +352,28 @@ uv run claude-lens report --by model --json
 
 `scripts/make_example_transcripts.py` regenerates the example files.
 
+The live commands read Claude Code's JSON on stdin. Fed by hand with the long example session in
+`examples/nudges/` (nine prompts, 180k tokens of context, written a day ago):
+
+```bash
+echo '{"session_id": "c0ffee00-0000-4000-8000-000000000001", "transcript_path": "examples/nudges/c0ffee00-long.jsonl", "model": {"display_name": "Opus"}}' | uv run claude-lens statusline
+```
+
+```
+Opus · ctx 180k/1M (18%) · $0.54 · cache cold (1h)
+```
+
+```bash
+echo '{"session_id": "c0ffee00-0000-4000-8000-000000000001", "transcript_path": "examples/nudges/c0ffee00-long.jsonl", "hook_event_name": "UserPromptSubmit", "prompt": "next"}' | uv run claude-lens hook UserPromptSubmit
+```
+
+```json
+{"systemMessage": "claude-lens: This session carries 180k tokens of context after 9 prompts, and every request re-reads it. New, unrelated task? `/rename` the session, then `/clear` (come back with `/resume`). Same task? `/compact <what to keep>`."}
+```
+
+Run it again and it prints nothing: each nudge is shown once per session.
+`scripts/make_nudge_transcript.py` regenerates the example.
+
 ## Tests and quality
 
 ```bash
@@ -359,6 +405,10 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy src
   doctor can name the changed segment only for proxy records; for transcripts it separates TTL
   expiry from everything else. Loop thresholds are fixed and will flag some legitimate work
   (re-running tests after each fix).
+- **Live nudges know only the transcript.** The status line and hook see a response once Claude
+  Code writes it; side calls are missing, as in reports. Cache state without Claude Code's own
+  `prompt_cache` data is inferred from timestamps and TTL. Nudges fire once per session, so a
+  session that is compacted and grows again is not nudged twice.
 - Prompt contents are never stored: only ids, timestamps, model, token counts, tool names,
   timings, short hashes of prompt segments and tool inputs, and the file path of file-tool calls.
 - Prices in the bundled table were checked on 2026-10-16 and will go stale; check them against the
@@ -374,6 +424,8 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy src
 4. **M4 (done):** local web dashboard.
 5. **M5 (done):** `insights` (recommendations, best-practice scorecard, optional LLM coach) and
    `whatif`.
+6. **Live nudges (done):** `statusline`, the `UserPromptSubmit` nudge hook, `install`, and a
+   Claude Code plugin.
 
 ## License
 
