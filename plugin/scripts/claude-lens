@@ -1,0 +1,18 @@
+#!/bin/sh
+# Starts claude-lens for the plugin: $LENS_BIN, else claude-lens on PATH, else the claude-lens
+# checkout this plugin directory lives in (via uv). When none is found, hooks stay silent (a hook
+# must never get in the way of a prompt) and other commands say what is missing.
+if [ -n "$LENS_BIN" ]; then
+  exec "$LENS_BIN" "$@"
+fi
+if command -v claude-lens >/dev/null 2>&1; then
+  exec claude-lens "$@"
+fi
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+if [ -f "$root/pyproject.toml" ] && command -v uv >/dev/null 2>&1; then
+  exec uv run --quiet --project "$root" claude-lens "$@"
+fi
+if [ "$1" != "hook" ]; then
+  echo "claude-lens is not installed: run 'uv tool install <path to claude-lens>' or set LENS_BIN."
+fi
+exit 0

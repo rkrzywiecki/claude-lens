@@ -1,0 +1,9 @@
+{
+  "name": "lens",
+  "displayName": "claude-lens",
+  "version": "0.1.0",
+  "description": "Live cost nudges from claude-lens: suggests /clear or /compact before a long session wastes context, and /lens shows recommendations from your Claude Code history.",
+  "author": { "name": "Radoslaw Krzywiecki" },
+  "license": "Apache-2.0",
+  "keywords": ["cost", "prompt-caching", "context", "observability"]
+}
