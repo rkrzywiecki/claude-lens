@@ -1,4 +1,4 @@
-"""Typer CLI: import, report."""
+"""Typer CLI: import, report, serve."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Annotated
 import typer
 from rich.console import Console
 
-from claude_lens.config import get_settings
+from claude_lens.config import get_settings, is_loopback
 from claude_lens.importers.claude_code import import_transcripts
 from claude_lens.log_config import configure_logging
 from claude_lens.models import GroupBy, ImportStats
@@ -118,3 +118,45 @@ def report(
         typer.echo(result.model_dump_json(indent=2))
     else:
         render_report(console, result)
+
+
+@app.command()
+def serve(
+    host: Annotated[str | None, typer.Option(help="Listen address (default: LENS_HOST).")] = None,
+    port: Annotated[int | None, typer.Option(help="Listen port (default: LENS_PORT).")] = None,
+    allow_non_loopback: Annotated[
+        bool,
+        typer.Option(
+            "--allow-non-loopback",
+            help="Allow listening on a non-loopback address (plain HTTP: API keys and prompts "
+            "cross the network unencrypted).",
+        ),
+    ] = False,
+) -> None:
+    """Run the recording pass-through proxy (point ANTHROPIC_BASE_URL at it)."""
+    import uvicorn
+
+    from claude_lens.proxy.app import create_app
+
+    settings = get_settings()
+    bind_host = host or settings.host
+    bind_port = port or settings.port
+    if not is_loopback(bind_host) and not (allow_non_loopback or settings.allow_non_loopback):
+        err_console.print(
+            f"[red]Refusing to listen on non-loopback address {bind_host!r}: API keys and "
+            "prompts would cross the network as plain HTTP. Bind to 127.0.0.1, or pass "
+            "--allow-non-loopback (LENS_ALLOW_NON_LOOPBACK=true) if TLS is terminated in "
+            "front of the proxy.[/red]"
+        )
+        raise typer.Exit(2)
+    shown = f"[{bind_host}]" if ":" in bind_host else bind_host
+    err_console.print(
+        f"claude-lens proxy on http://{shown}:{bind_port} -> {settings.upstream_url}, "
+        f"recording to {settings.resolved_db_path()}"
+    )
+    uvicorn.run(
+        create_app(settings),
+        host=bind_host,
+        port=bind_port,
+        log_level=settings.log_level.lower(),
+    )

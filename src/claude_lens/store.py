@@ -12,7 +12,7 @@ from typing import Self
 
 from claude_lens.models import RequestRecord, Usage
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS requests (
@@ -31,7 +31,9 @@ CREATE TABLE IF NOT EXISTS requests (
     stop_reason     TEXT,
     tool_names      TEXT NOT NULL,
     is_sidechain    INTEGER NOT NULL,
-    source          TEXT NOT NULL
+    source          TEXT NOT NULL,
+    ttft_ms         REAL,
+    latency_ms      REAL
 );
 CREATE INDEX IF NOT EXISTS requests_ts ON requests (ts);
 CREATE INDEX IF NOT EXISTS requests_session ON requests (session_id);
@@ -41,6 +43,45 @@ CREATE TABLE IF NOT EXISTS imported_files (
     mtime  REAL NOT NULL
 );
 """
+
+# _MIGRATIONS[n - 1] upgrades a database from version n to n + 1.
+_MIGRATIONS = (
+    "ALTER TABLE requests ADD COLUMN ttft_ms REAL;ALTER TABLE requests ADD COLUMN latency_ms REAL;",
+)
+
+_COLUMNS = (
+    "message_id, request_id, session_id, project, model, ts, input_tokens, output_tokens, "
+    "cache_read, cache_write_5m, cache_write_1h, speed, stop_reason, tool_names, is_sidechain, "
+    "source, ttft_ms, latency_ms"
+)
+
+# The same response can arrive from both sources. Usage and tool names come from the newest
+# write; latency is kept once measured; a proxy record never replaces the session, project and
+# start time of an imported one (the transcript knows the real session, the proxy only guesses).
+_KEEP_IMPORTED = "requests.source = 'claude_code' AND excluded.source = 'proxy'"
+# Built only from the constants above; values are bound as parameters.
+_UPSERT = f"""
+INSERT INTO requests ({_COLUMNS}) VALUES ({", ".join("?" * 18)})
+ON CONFLICT (message_id) DO UPDATE SET
+    request_id = COALESCE(excluded.request_id, requests.request_id),
+    session_id = CASE WHEN {_KEEP_IMPORTED} THEN requests.session_id ELSE excluded.session_id END,
+    project = CASE WHEN {_KEEP_IMPORTED} THEN requests.project ELSE excluded.project END,
+    ts = CASE WHEN {_KEEP_IMPORTED} THEN requests.ts ELSE excluded.ts END,
+    is_sidechain = CASE WHEN {_KEEP_IMPORTED} THEN requests.is_sidechain
+        ELSE excluded.is_sidechain END,
+    source = CASE WHEN {_KEEP_IMPORTED} THEN requests.source ELSE excluded.source END,
+    model = excluded.model,
+    input_tokens = excluded.input_tokens,
+    output_tokens = excluded.output_tokens,
+    cache_read = excluded.cache_read,
+    cache_write_5m = excluded.cache_write_5m,
+    cache_write_1h = excluded.cache_write_1h,
+    speed = excluded.speed,
+    stop_reason = COALESCE(excluded.stop_reason, requests.stop_reason),
+    tool_names = excluded.tool_names,
+    ttft_ms = COALESCE(excluded.ttft_ms, requests.ttft_ms),
+    latency_ms = COALESCE(excluded.latency_ms, requests.latency_ms)
+"""  # noqa: S608
 
 
 def _ts(value: datetime) -> str:
@@ -56,17 +97,24 @@ class Store:
     def __init__(self, path: Path) -> None:
         if str(path) != ":memory:":
             path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(path)
+        self._conn = sqlite3.connect(path, timeout=10.0)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._migrate()
 
     def _migrate(self) -> None:
         (version,) = self._conn.execute("PRAGMA user_version").fetchone()
-        if version not in (0, SCHEMA_VERSION):
+        if not 0 <= version <= SCHEMA_VERSION:
             raise StoreError(f"database schema version {version}, expected {SCHEMA_VERSION}")
-        with self._conn:
-            self._conn.executescript(_SCHEMA)
-            self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        if version == SCHEMA_VERSION:
+            return
+        # A new database gets the current schema; an older one each missing migration. Every
+        # step bumps user_version in the same transaction, so an interrupted upgrade resumes.
+        if version == 0:
+            steps = [(_SCHEMA, SCHEMA_VERSION)]
+        else:
+            steps = [(_MIGRATIONS[v - 1], v + 1) for v in range(version, SCHEMA_VERSION)]
+        for script, target in steps:
+            self._conn.executescript(f"BEGIN; {script} PRAGMA user_version = {target}; COMMIT;")
 
     def close(self) -> None:
         self._conn.close()
@@ -122,15 +170,13 @@ class Store:
                 json.dumps(r.tool_names),
                 int(r.is_sidechain),
                 r.source,
+                r.ttft_ms,
+                r.latency_ms,
             )
             for r in records
         ]
         with self._conn:
-            self._conn.executemany(
-                "INSERT OR REPLACE INTO requests VALUES "
-                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                rows,
-            )
+            self._conn.executemany(_UPSERT, rows)
         return len(rows)
 
     def requests(
@@ -153,7 +199,7 @@ class Store:
             params.append(f"%{project}%")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         # Clause strings are fixed above; only values come from the caller, as parameters.
-        query = f"SELECT * FROM requests {where} ORDER BY ts"  # noqa: S608
+        query = f"SELECT {_COLUMNS} FROM requests {where} ORDER BY ts"  # noqa: S608
         for row in self._conn.execute(query, params):
             yield RequestRecord(
                 message_id=row[0],
@@ -174,6 +220,8 @@ class Store:
                 tool_names=json.loads(row[13]),
                 is_sidechain=bool(row[14]),
                 source=row[15],
+                ttft_ms=row[16],
+                latency_ms=row[17],
             )
 
     def count(self) -> int:

@@ -59,6 +59,9 @@ class RequestRecord(BaseModel):
     tool_names: list[str] = Field(default_factory=list)
     is_sidechain: bool = False
     source: Source = "claude_code"
+    # Measured by the proxy only (milliseconds from receiving the request).
+    ttft_ms: float | None = None
+    latency_ms: float | None = None
 
 
 class CostBreakdown(BaseModel):
