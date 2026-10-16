@@ -1,4 +1,5 @@
-"""Typer CLI: import, report, cache-doctor, loops, session, insights, whatif, serve, dashboard."""
+"""Typer CLI: import, report, cache-doctor, loops, session, insights, trends, whatif, serve,
+dashboard."""
 
 from __future__ import annotations
 
@@ -26,6 +27,7 @@ from claude_lens.render import (
     render_loops,
     render_report,
     render_session,
+    render_trends,
     render_whatif,
 )
 from claude_lens.store import Store, StoreError
@@ -250,6 +252,12 @@ def insights(
     check_files: Annotated[
         bool, typer.Option(help="Check project directories for CLAUDE.md.")
     ] = True,
+    compare: Annotated[
+        bool,
+        typer.Option(
+            "--compare", help="Compare with the range of the same length just before this one."
+        ),
+    ] = False,
     as_json: JsonOpt = False,
     refresh: RefreshOpt = True,
     db: DbOpt = None,
@@ -257,13 +265,18 @@ def insights(
     """Recommendations: models, effort, context, cache, workflow and best practices."""
     from claude_lens.insights.coach import CoachError, coach_payload, run_coach
     from claude_lens.insights.engine import build_insights
+    from claude_lens.insights.trends import compare as compare_ranges
 
     settings = get_settings()
     filters = _filters(days, since, until, project)
+    if compare and filters.since is None:
+        raise _fail("--compare needs a range: pass --days or --since.")
     pricing = _pricing()
     with _open_store(db) as store:
         _refresh(store, refresh)
         result = build_insights(store, pricing, filters, check_files=check_files)
+        if compare:
+            result.compare = compare_ranges(store, pricing, filters)
     lang = language or settings.coach_language
     if coach and dry_run:
         typer.echo(json.dumps(coach_payload(result, lang), indent=2))
@@ -292,6 +305,35 @@ def insights(
     render_insights(console, result)
     if advice:
         render_coach(console, advice)
+
+
+@app.command()
+def trends(
+    weeks: Annotated[
+        int, typer.Option(min=1, max=104, help="Weeks to show, the current one included.")
+    ] = 8,
+    until: Annotated[
+        datetime | None,
+        typer.Option(formats=["%Y-%m-%d"], help="End with the week of this day (default: today)."),
+    ] = None,
+    project: ProjectOpt = None,
+    as_json: JsonOpt = False,
+    refresh: RefreshOpt = True,
+    db: DbOpt = None,
+) -> None:
+    """Weekly trends of the habits insights looks at: did the recommendations help?"""
+    from claude_lens.insights.trends import trends as weekly_trends
+
+    pricing = _pricing()
+    with _open_store(db) as store:
+        _refresh(store, refresh)
+        result = weekly_trends(
+            store, pricing, weeks, project or None, until.date() if until else None
+        )
+    if as_json:
+        _echo_json(result)
+    else:
+        render_trends(console, result)
 
 
 @app.command()

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -11,7 +11,14 @@ from rich.table import Table
 from claude_lens.analysis.cache import CacheDoctorReport
 from claude_lens.analysis.session import SessionDetail
 from claude_lens.insights.coach import CoachResult
-from claude_lens.insights.models import InsightsReport
+from claude_lens.insights.models import (
+    Comparison,
+    InsightsReport,
+    MetricChange,
+    TrendsReport,
+    WeekMetrics,
+)
+from claude_lens.insights.trends import changes
 from claude_lens.insights.whatif import WhatIf
 from claude_lens.models import ImportStats, Report, ReportRow
 from claude_lens.queries import LoopReport
@@ -265,6 +272,8 @@ def render_insights(console: Console, report: InsightsReport) -> None:
         f"  Thinking share of output: {_pct(p.thinking_share)}, subagents' share of cost: "
         f"{_pct(p.subagent_cost_share)}, cache hit ratio: {_pct(p.cache_hit_ratio)}\n"
     )
+    if report.compare:
+        render_comparison(console, report.compare)
     if not report.insights:
         console.print("No recommendations: nothing in this range crossed a threshold.")
     for n, i in enumerate(report.insights, 1):
@@ -327,3 +336,91 @@ def render_whatif(console: Console, result: WhatIf, selection: str) -> None:
 
 def _pct(value: float | None) -> str:
     return "-" if value is None else f"{value:.0%}"
+
+
+# -- trends ------------------------------------------------------------------------------
+
+_ARROW_STYLE = {"better": "green", "worse": "red", "same": "dim", "changed": "dim", "n/a": "dim"}
+
+
+def metric_value(value: float | None, unit: str) -> str:
+    if value is None:
+        return "-"
+    return money(value) if unit == "usd" else f"{value:.0%}"
+
+
+def _delta(change: MetricChange) -> str:
+    if change.delta is None:
+        return ""
+    if change.unit == "usd":
+        sign = "+" if change.delta >= 0 else ""
+        return f"{sign}{money(change.delta)}"
+    return f"{change.delta * 100:+.0f} pp"
+
+
+def change_marker(change: MetricChange) -> str:
+    """An arrow for the direction of the change, colored by whether it is an improvement."""
+    if change.verdict == "n/a":
+        return ""
+    if change.verdict == "same":
+        return "[dim]=[/dim]"
+    arrow = "↑" if (change.delta or 0) > 0 else "↓"
+    return f"[{_ARROW_STYLE[change.verdict]}]{arrow}[/{_ARROW_STYLE[change.verdict]}]"
+
+
+def render_trends(console: Console, report: TrendsReport) -> None:
+    if not any(w.requests for w in report.weeks):
+        console.print("No requests in these weeks. Run `claude-lens import` first?")
+        return
+    title = "Weekly trends" + (f" ({report.project})" if report.project else "")
+    table = Table(title=title, title_justify="left")
+    table.add_column("Metric")
+    for w in report.weeks:
+        table.add_column(w.week[2:] + ("*" if w.partial else ""), justify="right")
+    table.add_column("Change", justify="right")
+    previous: list[WeekMetrics | None] = [None, *report.weeks[:-1]]
+    for m in report.metrics:
+        cells = []
+        for week, before in zip(report.weeks, previous, strict=True):
+            change = next(c for c in changes(week, before) if c.id == m.id)
+            marker = change_marker(change)
+            cells.append(metric_value(change.current, m.unit) + (f" {marker}" if marker else ""))
+        last = next(c for c in report.changes if c.id == m.id)
+        table.add_row(m.label, *cells, f"{_delta(last)} {change_marker(last)}".strip())
+    table.add_row("[dim]Sessions[/dim]", *[f"[dim]{w.sessions}[/dim]" for w in report.weeks], "")
+    console.print(table)
+    for name, attr in (("model", "models"), ("effort", "efforts")):
+        keys = sorted({m.key for w in report.weeks for m in getattr(w, attr)})
+        if not keys:
+            continue
+        mix = Table(title=f"Cost share by {name}", title_justify="left")
+        mix.add_column(name.capitalize())
+        for w in report.weeks:
+            mix.add_column(w.week[2:] + ("*" if w.partial else ""), justify="right")
+        for key in keys:
+            shares = [{m.key: m.share for m in getattr(w, attr)}.get(key) for w in report.weeks]
+            mix.add_row(key, *[_pct(s) for s in shares])
+        console.print(mix)
+    console.print(
+        "[dim]* the current week, still running. Arrows compare with the week before: green is "
+        "an improvement, red a regression, = about the same; thinking share has no good "
+        "direction. Definitions match `claude-lens insights` (docs/trends.md).[/dim]"
+    )
+
+
+def render_comparison(console: Console, comparison: Comparison) -> None:
+    before, now = comparison.previous, comparison.current
+    console.print(
+        f"[bold]Since last period[/bold]  {_local(now.since, '%Y-%m-%d')} … "
+        f"{_local(now.until - timedelta(seconds=1), '%Y-%m-%d')} vs "
+        f"{_local(before.since, '%Y-%m-%d')} … "
+        f"{_local(before.until - timedelta(seconds=1), '%Y-%m-%d')}"
+    )
+    for c in comparison.changes:
+        marker = change_marker(c)
+        console.print(
+            f"  {c.label}: {metric_value(c.previous, c.unit)} → "
+            f"{metric_value(c.current, c.unit)} {_delta(c)} {marker}".rstrip(),
+            highlight=False,
+        )
+    console.print()

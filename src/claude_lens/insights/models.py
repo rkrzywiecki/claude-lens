@@ -79,9 +79,103 @@ class InsightsReport(BaseModel):
     profile: Profile
     insights: list[Insight]
     practices: list[Practice]
+    # With `--compare`: this range against the same-length range before it.
+    compare: Comparison | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def total_savings_usd(self) -> float:
         """Sum of the estimated savings; overlapping insights can count the same tokens twice."""
         return sum(i.savings_usd or 0.0 for i in self.insights)
+
+
+# -- trends: the same measures over time ----------------------------------------------
+
+MetricUnit = Literal["usd", "share"]
+# Which way is an improvement; None for measures that are context, not a goal.
+Better = Literal["lower", "higher"]
+Verdict = Literal["better", "worse", "same", "changed", "n/a"]
+
+
+class MetricInfo(BaseModel):
+    id: str
+    label: str
+    unit: MetricUnit
+    better: Better | None
+    description: str
+
+
+class PeriodMetrics(BaseModel):
+    """The habits the insight rules look at, measured over one range."""
+
+    since: datetime
+    until: datetime
+    sessions: int
+    requests: int
+    cost: float
+    context_cost: float
+    claude_code_sessions: int
+    long_sessions: int
+    kitchen_sink_sessions: int
+    large_change_sessions: int
+    planned_large_change_sessions: int
+    rework_sessions: int
+    models: list[Mix]
+    efforts: list[Mix]
+    cache_hit_ratio: float | None
+    avoidable_cache_penalty: float
+    thinking_share: float | None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def kitchen_sink_share(self) -> float | None:
+        return _share(self.kitchen_sink_sessions, self.long_sessions)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def plan_mode_share(self) -> float | None:
+        return _share(self.planned_large_change_sessions, self.large_change_sessions)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def rework_share(self) -> float | None:
+        return _share(self.rework_sessions, self.claude_code_sessions)
+
+
+class WeekMetrics(PeriodMetrics):
+    week: str  # ISO week of the local calendar, e.g. 2026-W42
+    partial: bool  # the current week, still running
+
+
+class MetricChange(BaseModel):
+    id: str
+    label: str
+    unit: MetricUnit
+    better: Better | None
+    current: float | None
+    previous: float | None
+    delta: float | None
+    verdict: Verdict
+
+
+class Comparison(BaseModel):
+    """One range against the range of the same length just before it."""
+
+    current: PeriodMetrics
+    previous: PeriodMetrics
+    changes: list[MetricChange]
+
+
+class TrendsReport(BaseModel):
+    project: str | None
+    metrics: list[MetricInfo]
+    weeks: list[WeekMetrics]  # oldest first
+    # The last week against the one before it.
+    changes: list[MetricChange]
+
+
+def _share(part: int, whole: int) -> float | None:
+    return part / whole if whole else None
+
+
+InsightsReport.model_rebuild()

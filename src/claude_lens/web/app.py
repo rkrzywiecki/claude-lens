@@ -26,7 +26,8 @@ from claude_lens.config import Settings
 from claude_lens.importers.claude_code import import_transcripts
 from claude_lens.insights.coach import CoachError, CoachResult, run_coach
 from claude_lens.insights.engine import build_insights
-from claude_lens.insights.models import InsightsReport
+from claude_lens.insights.models import InsightsReport, TrendsReport
+from claude_lens.insights.trends import DEFAULT_WEEKS, trends
 from claude_lens.models import ImportStats, Report
 from claude_lens.pricing import Pricing, load_pricing
 from claude_lens.queries import Filters, LoopReport, QueryError
@@ -113,6 +114,18 @@ def create_dashboard(
     ) -> InsightsReport:
         with open_store() as store:
             return _short_insight_paths(build_insights(store, pricing, filters(days, project)))
+
+    @app.get("/api/trends")
+    def weekly_trends(
+        weeks: Annotated[int, Query(ge=1, le=104)] = DEFAULT_WEEKS,
+        project: str | None = None,
+    ) -> TrendsReport:
+        selected = filters(None, project)
+        with open_store() as store:
+            report = trends(store, pricing, weeks, selected.project)
+        return report.model_copy(
+            update={"project": shorten_home(report.project) if report.project else None}
+        )
 
     @app.post("/api/coach", dependencies=[Depends(require_action_header)])
     def coach(

@@ -25,11 +25,12 @@ import json
 import shutil
 import subprocess
 import tempfile
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
 
-from claude_lens.insights.models import InsightsReport
+from claude_lens.insights.models import Comparison, InsightsReport, PeriodMetrics
 from claude_lens.models import Usage
 from claude_lens.pricing import Pricing, normalize_model
 
@@ -55,6 +56,9 @@ command, setting or habit).
 - Then a section on models and effort: which model and effort level fit which kind of work, \
 based on the profile.
 - Then a short section on what the user already does well.
+- When the input has `since_last_period`, add a short section on what improved and what got \
+worse against the previous range of the same length, citing those numbers. A `verdict` of \
+"better" or "worse" follows the metric's `better_when`; "same" means no real change.
 - End with one line on what to measure next time to confirm the changes helped.
 
 Rules:
@@ -89,7 +93,7 @@ class CoachResult(BaseModel):
 def coach_payload(report: InsightsReport, language: str = "English") -> dict[str, Any]:
     """The data sent to the model: aggregates only, no ids, paths or evidence."""
     p = report.profile
-    return {
+    payload: dict[str, Any] = {
         "language": language,
         "profile": {
             "range": {
@@ -128,6 +132,39 @@ def coach_payload(report: InsightsReport, language: str = "English") -> dict[str
         "practices": [
             {"practice": pr.title, "status": pr.status, "evidence": pr.evidence}
             for pr in report.practices
+        ],
+    }
+    if report.compare:
+        payload["since_last_period"] = _comparison(report.compare)
+    return payload
+
+
+def _comparison(comparison: Comparison) -> dict[str, Any]:
+    """This range against the one before it: aggregates only, like the rest of the payload."""
+
+    def period(m: PeriodMetrics) -> dict[str, Any]:
+        return {
+            "since": m.since.astimezone().date().isoformat(),
+            "until": (m.until.astimezone() - timedelta(seconds=1)).date().isoformat(),
+            "sessions": m.sessions,
+            "requests": m.requests,
+            "cost_by_model": {x.key: round(x.share, 3) for x in m.models},
+            "cost_by_effort": {x.key: round(x.share, 3) for x in m.efforts},
+        }
+
+    return {
+        "current": period(comparison.current),
+        "previous": period(comparison.previous),
+        "metrics": [
+            {
+                "metric": c.label,
+                "unit": c.unit,
+                "previous": _round(c.previous),
+                "current": _round(c.current),
+                "better_when": c.better,
+                "verdict": c.verdict,
+            }
+            for c in comparison.changes
         ],
     }
 
