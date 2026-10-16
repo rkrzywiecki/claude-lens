@@ -16,7 +16,7 @@ from claude_lens import queries
 from claude_lens.config import get_settings, is_loopback
 from claude_lens.importers.claude_code import import_transcripts
 from claude_lens.log_config import configure_logging
-from claude_lens.models import GroupBy, ImportStats
+from claude_lens.models import GroupBy, ImportStats, OutcomeReport, Report
 from claude_lens.pricing import Pricing, PricingError, load_pricing
 from claude_lens.queries import Filters, QueryError
 from claude_lens.render import (
@@ -25,6 +25,7 @@ from claude_lens.render import (
     render_import,
     render_insights,
     render_loops,
+    render_outcome_report,
     render_report,
     render_session,
     render_trends,
@@ -51,6 +52,13 @@ ProjectOpt = Annotated[
 ]
 JsonOpt = Annotated[bool, typer.Option("--json", help="Print the result as JSON.")]
 RefreshOpt = Annotated[bool, typer.Option(help="Import changed transcripts first.")]
+GitOpt = Annotated[
+    bool,
+    typer.Option(
+        "--git/--no-git",
+        help="Read commits of sessions in local git repositories (default: LENS_GIT).",
+    ),
+]
 DbOpt = Annotated[Path | None, typer.Option(help="Database path (default: LENS_DB_PATH).")]
 HostOpt = Annotated[str | None, typer.Option(help="Listen address (default: LENS_HOST).")]
 AllowNonLoopbackOpt = Annotated[
@@ -104,11 +112,17 @@ def _run_import(store: Store, source: Path | None, full: bool) -> ImportStats:
     return import_transcripts(store, root, full=full)
 
 
-def _refresh(store: Store, refresh: bool) -> None:
-    """Quietly import changed transcripts; skipped when the directory does not exist."""
-    root = get_settings().resolved_transcripts_dir()
+def _refresh(store: Store, refresh: bool, git: bool = False) -> None:
+    """Quietly import changed transcripts (skipped when the directory does not exist), then
+    read git outcomes when asked; both are cached, so a re-run is cheap."""
+    settings = get_settings()
+    root = settings.resolved_transcripts_dir()
     if refresh and root.is_dir():
         import_transcripts(store, root)
+    if refresh and git and settings.git:
+        from claude_lens.outcomes import Git, refresh_outcomes
+
+        refresh_outcomes(store, Git(timeout=settings.git_timeout))
 
 
 def _check_bind(host: str, allow: bool, what: str) -> None:
@@ -141,30 +155,45 @@ def import_cmd(
 
 @app.command()
 def report(
-    by: Annotated[str, typer.Option("--by", help="Group by: day, project, model, session.")] = (
-        "day"
-    ),
+    by: Annotated[
+        str, typer.Option("--by", help="Group by: day, project, model, effort, session.")
+    ] = "day",
     days: DaysOpt = None,
     since: SinceOpt = None,
     until: UntilOpt = None,
     project: ProjectOpt = None,
     top: Annotated[int | None, typer.Option(min=1, help="Show only the N largest rows.")] = None,
+    outcomes: Annotated[
+        bool,
+        typer.Option(
+            "--outcomes",
+            help="Per session: commits, changed lines, cost per commit (git repositories only).",
+        ),
+    ] = False,
+    git: GitOpt = True,
     as_json: JsonOpt = False,
     refresh: RefreshOpt = True,
     db: DbOpt = None,
 ) -> None:
     """Show API-equivalent cost, token usage and cache hit ratio."""
-    if by not in ("day", "project", "model", "session"):
-        raise _fail(f"--by must be day, project, model or session, not {by!r}")
+    if by not in ("day", "project", "model", "effort", "session"):
+        raise _fail(f"--by must be day, project, model, effort or session, not {by!r}")
     group_by: GroupBy = by  # type: ignore[assignment]
     filters = _filters(days, since, until, project)
     pricing = _pricing()
     with _open_store(db) as store:
-        _refresh(store, refresh)
-        result = queries.report(store, pricing, group_by, filters, top)
+        _refresh(store, refresh, git=outcomes and git)
+        result: BaseModel
+        if outcomes:
+            result = queries.outcome_report(store, pricing, group_by, filters, top)
+        else:
+            result = queries.report(store, pricing, group_by, filters, top)
     if as_json:
         _echo_json(result)
+    elif isinstance(result, OutcomeReport):
+        render_outcome_report(console, result)
     else:
+        assert isinstance(result, Report)  # noqa: S101 - narrows the type
         render_report(console, result)
 
 
@@ -215,14 +244,15 @@ def loops(
 @app.command()
 def session(
     session_id: Annotated[str, typer.Argument(help="Session id or a unique prefix of one.")],
+    git: GitOpt = True,
     as_json: JsonOpt = False,
     refresh: RefreshOpt = True,
     db: DbOpt = None,
 ) -> None:
-    """Show one session: request timeline, context growth, cache misses and loops."""
+    """Show one session: request timeline, context growth, cache misses, loops and commits."""
     pricing = _pricing()
     with _open_store(db) as store:
-        _refresh(store, refresh)
+        _refresh(store, refresh, git=git)
         try:
             result = queries.session(store, pricing, session_id)
         except QueryError as exc:
@@ -252,6 +282,7 @@ def insights(
     check_files: Annotated[
         bool, typer.Option(help="Check project directories for CLAUDE.md.")
     ] = True,
+    git: GitOpt = True,
     compare: Annotated[
         bool,
         typer.Option(
@@ -273,7 +304,7 @@ def insights(
         raise _fail("--compare needs a range: pass --days or --since.")
     pricing = _pricing()
     with _open_store(db) as store:
-        _refresh(store, refresh)
+        _refresh(store, refresh, git=git)
         result = build_insights(store, pricing, filters, check_files=check_files)
         if compare:
             result.compare = compare_ranges(store, pricing, filters)
@@ -415,6 +446,7 @@ def dashboard(
     host: Annotated[str, typer.Option(help="Listen address.")] = "127.0.0.1",
     port: Annotated[int, typer.Option(help="Listen port.")] = 8789,
     allow_non_loopback: AllowNonLoopbackOpt = False,
+    git: GitOpt = True,
     db: DbOpt = None,
 ) -> None:
     """Serve the local web dashboard (imports new transcripts when the page loads)."""
@@ -423,6 +455,8 @@ def dashboard(
     from claude_lens.web.app import create_dashboard
 
     settings = get_settings()
+    if not git:
+        settings = settings.model_copy(update={"git": False})
     _check_bind(host, allow_non_loopback, "your usage data")
     db_path = db or settings.resolved_db_path()
     _open_store(db_path).close()  # fail early on an unusable database

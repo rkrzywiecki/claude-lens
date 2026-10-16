@@ -7,6 +7,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, computed_field
 
+from claude_lens.models import OutcomeRow
+
 Category = Literal["model", "effort", "context", "cache", "workflow", "setup", "api"]
 Severity = Literal["high", "medium", "low", "info"]
 Confidence = Literal["high", "medium", "low"]
@@ -55,6 +57,17 @@ class Mix(BaseModel):
     share: float
 
 
+class OutcomeSummary(BaseModel):
+    """Git outcome of the sessions that ran in a local repository (commits: a rough proxy)."""
+
+    total: OutcomeRow
+    # Each session counts once, under the model that cost the most / its most common effort.
+    by_model: list[OutcomeRow]
+    by_effort: list[OutcomeRow]
+    # Sessions outside a git repository: left out, not counted as "no commit".
+    untracked_sessions: int
+
+
 class Profile(BaseModel):
     """How Claude was used in the selected range: the numbers the insights are drawn from."""
 
@@ -73,6 +86,7 @@ class Profile(BaseModel):
     cache_hit_ratio: float | None
     median_session_requests: float | None
     p95_peak_prompt_tokens: int | None
+    outcomes: OutcomeSummary | None = None
 
 
 class InsightsReport(BaseModel):

@@ -9,7 +9,7 @@ from pydantic import BaseModel, computed_field
 
 from claude_lens.analysis.cache import SessionCache, session_misses
 from claude_lens.analysis.loops import LoopFinding, detect_loops
-from claude_lens.models import CostBreakdown, RequestRecord, ToolCall, Usage
+from claude_lens.models import CostBreakdown, RequestRecord, SessionOutcome, ToolCall, Usage
 from claude_lens.pricing import Pricing
 
 
@@ -47,6 +47,8 @@ class SessionDetail(BaseModel):
     context: ContextSummary
     cache: SessionCache
     loops: list[LoopFinding]
+    # Commits in the session's git repository (a rough outcome signal); None outside git.
+    outcome: SessionOutcome | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property

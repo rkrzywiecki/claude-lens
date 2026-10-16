@@ -8,11 +8,12 @@ from datetime import datetime
 
 from claude_lens.analysis.cache import diagnose
 from claude_lens.analysis.loops import detect_loops
-from claude_lens.insights.models import Insight, InsightsReport, Mix, Profile
+from claude_lens.insights.models import Insight, InsightsReport, Mix, OutcomeSummary, Profile
 from claude_lens.insights.practices import practices
 from claude_lens.insights.rules import RULES, RuleContext
 from claude_lens.insights.stats import SessionStats, build_session_stats
 from claude_lens.models import RequestRecord, SessionMeta
+from claude_lens.outcomes import build_outcome_report
 from claude_lens.pricing import Pricing, normalize_model
 from claude_lens.queries import Filters
 from claude_lens.store import Store
@@ -32,7 +33,7 @@ def load_context(
     calls = list(store.tool_calls(filters.since, filters.until, project=filters.project))
     loops = detect_loops(calls)
     metas = store.session_meta() if metas is None else metas
-    sessions = build_session_stats(records, calls, metas, loops, pricing)
+    sessions = build_session_stats(records, calls, metas, loops, pricing, store.outcomes())
     return RuleContext(
         sessions=sessions,
         records=records,
@@ -118,6 +119,20 @@ def _profile(
         p95_peak_prompt_tokens=peaks[min(len(peaks) - 1, int(len(peaks) * 0.95))]
         if peaks
         else None,
+        outcomes=outcome_summary(sessions),
+    )
+
+
+def outcome_summary(sessions: list[SessionStats]) -> OutcomeSummary | None:
+    """Commits per model and effort; None when no session ran in a git repository."""
+    by_model = build_outcome_report(sessions, "model")
+    if not by_model.total.sessions:
+        return None
+    return OutcomeSummary(
+        total=by_model.total,
+        by_model=by_model.rows,
+        by_effort=build_outcome_report(sessions, "effort").rows,
+        untracked_sessions=by_model.untracked_sessions,
     )
 
 

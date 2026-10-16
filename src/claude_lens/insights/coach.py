@@ -30,8 +30,8 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
 
-from claude_lens.insights.models import Comparison, InsightsReport, PeriodMetrics
-from claude_lens.models import Usage
+from claude_lens.insights.models import Comparison, InsightsReport, OutcomeSummary, PeriodMetrics
+from claude_lens.models import OutcomeRow, Usage
 from claude_lens.pricing import Pricing, normalize_model
 
 if TYPE_CHECKING:
@@ -69,6 +69,9 @@ which one a number is.
 - The logs show cost, not quality. Present cheaper models and lower effort as experiments to \
 try on real tasks, never as guaranteed wins. Recommend raising effort or model where the data \
 shows struggling.
+- `git_outcomes` counts commits made during sessions that ran in a git repository: a rough \
+proxy for kept work, not for quality, and only a correlation across models and effort levels. \
+Sessions outside git are left out.
 - Low-confidence findings are hypotheses; say so.
 - Be concise: at most about 450 words. Use Markdown headings and bullet points.
 """
@@ -113,6 +116,7 @@ def coach_payload(report: InsightsReport, language: str = "English") -> dict[str
             "cache_hit_ratio": _round(p.cache_hit_ratio),
             "median_requests_per_session": p.median_session_requests,
             "p95_peak_context_tokens": p.p95_peak_prompt_tokens,
+            "git_outcomes": _outcomes(p.outcomes),
         },
         "findings": [
             {
@@ -167,6 +171,36 @@ def _comparison(comparison: Comparison) -> dict[str, Any]:
             for c in comparison.changes
         ],
     }
+
+
+def _outcome_row(row: OutcomeRow) -> dict[str, Any]:
+    return {
+        "sessions": row.sessions,
+        "sessions_with_commits": row.sessions_with_commits,
+        "sessions_with_edits_but_no_commit": row.edits_no_commit,
+        "commits": row.commits,
+        "lines_changed": row.lines_changed,
+        "cost_usd": round(row.cost, 2),
+        "cost_per_commit_usd": _money(row.cost_per_commit),
+        "cost_per_100_lines_usd": _money(row.cost_per_100_lines),
+    }
+
+
+def _outcomes(summary: OutcomeSummary | None) -> dict[str, Any] | None:
+    """Aggregates only: no repository paths, session ids or commit details."""
+    if summary is None:
+        return None
+    return {
+        "note": "commits are a rough proxy for outcome, not quality; correlation only",
+        "sessions_outside_git": summary.untracked_sessions,
+        "total": _outcome_row(summary.total),
+        "by_model": {r.key: _outcome_row(r) for r in summary.by_model},
+        "by_effort": {r.key: _outcome_row(r) for r in summary.by_effort},
+    }
+
+
+def _money(value: float | None) -> float | None:
+    return None if value is None else round(value, 2)
 
 
 def run_coach(

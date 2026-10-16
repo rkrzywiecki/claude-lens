@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 Source = Literal["claude_code", "proxy"]
 Speed = Literal["standard", "fast"]
-GroupBy = Literal["day", "project", "model", "session"]
+GroupBy = Literal["day", "project", "model", "effort", "session"]
 
 
 class Usage(BaseModel):
@@ -120,6 +120,71 @@ class ToolCall(BaseModel):
     # From the matching tool_result: None until the result is seen.
     is_error: bool | None = None
     source: Source = "claude_code"
+
+
+class SessionOutcome(BaseModel):
+    """Commits made in a session's git repository during the session (a rough outcome signal).
+
+    Counts only: commit messages, diffs and file names are never stored.
+    """
+
+    session_id: str
+    # Top-level directory of the git work tree the session ran in.
+    repo: str
+    commits: int = 0
+    files_changed: int = 0
+    lines_added: int = 0
+    lines_removed: int = 0
+    # Cache key: the session window and a hash of the repository's refs when it was read.
+    window_end: datetime
+    refs_hash: str
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def lines_changed(self) -> int:
+        return self.lines_added + self.lines_removed
+
+
+class OutcomeRow(BaseModel):
+    """Cost and git outcome of the sessions in one group."""
+
+    key: str
+    label: str | None = None
+    sessions: int = 0
+    sessions_with_commits: int = 0
+    # Sessions that edited files but made no commit in their window.
+    edits_no_commit: int = 0
+    cost: float = 0.0
+    commits: int = 0
+    files_changed: int = 0
+    lines_added: int = 0
+    lines_removed: int = 0
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def lines_changed(self) -> int:
+        return self.lines_added + self.lines_removed
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def cost_per_commit(self) -> float | None:
+        return self.cost / self.commits if self.commits else None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def cost_per_100_lines(self) -> float | None:
+        return self.cost / self.lines_changed * 100 if self.lines_changed else None
+
+
+class OutcomeReport(BaseModel):
+    """Sessions in git repositories, grouped; the rest is counted, not judged."""
+
+    group_by: GroupBy
+    rows: list[OutcomeRow]
+    total: OutcomeRow
+    # Sessions with no git outcome (no local repository, or git never read).
+    untracked_sessions: int = 0
+    untracked_cost: float = 0.0
 
 
 class CostBreakdown(BaseModel):

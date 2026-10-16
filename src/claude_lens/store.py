@@ -10,9 +10,16 @@ from pathlib import Path
 from types import TracebackType
 from typing import Self
 
-from claude_lens.models import RequestFeatures, RequestRecord, SessionMeta, ToolCall, Usage
+from claude_lens.models import (
+    RequestFeatures,
+    RequestRecord,
+    SessionMeta,
+    SessionOutcome,
+    ToolCall,
+    Usage,
+)
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _TOOL_CALLS = """
 CREATE TABLE IF NOT EXISTS tool_calls (
@@ -44,6 +51,20 @@ CREATE TABLE IF NOT EXISTS session_meta (
     agents            TEXT NOT NULL,
     active_ms         INTEGER NOT NULL,
     PRIMARY KEY (session_id, source_file)
+);
+"""
+
+# Git outcome per session: counts only, never commit messages, diffs or file names.
+_SESSION_OUTCOMES = """
+CREATE TABLE IF NOT EXISTS session_outcomes (
+    session_id     TEXT PRIMARY KEY,
+    repo           TEXT NOT NULL,
+    commits        INTEGER NOT NULL,
+    files_changed  INTEGER NOT NULL,
+    lines_added    INTEGER NOT NULL,
+    lines_removed  INTEGER NOT NULL,
+    window_end     TEXT NOT NULL,
+    refs_hash      TEXT NOT NULL
 );
 """
 
@@ -84,6 +105,7 @@ CREATE TABLE IF NOT EXISTS imported_files (
 """
     + _TOOL_CALLS
     + _SESSION_META
+    + _SESSION_OUTCOMES
 )
 
 # _MIGRATIONS[n - 1] upgrades a database from version n to n + 1.
@@ -103,6 +125,8 @@ _MIGRATIONS = (
             _SESSION_META,
         ]
     ),
+    # v5 adds git outcomes per session; filled by `claude-lens outcomes`, nothing to re-import.
+    _SESSION_OUTCOMES,
 )
 
 _COLUMNS = (
@@ -364,6 +388,67 @@ class Store:
             current = merged.get(meta.session_id)
             merged[meta.session_id] = meta if current is None else _merge_meta(current, meta)
         return merged
+
+    # -- session windows and outcomes ------------------------------------------
+
+    def session_windows(
+        self, since: datetime | None = None, until: datetime | None = None
+    ) -> Iterator[tuple[str, str, datetime, datetime]]:
+        """(session id, project, first request, last request) for every session in range."""
+        clauses, params = _filters(since, until, None, None)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        # The project of a session's first request; clause strings are fixed above.
+        query = f"""
+            SELECT session_id,
+                   (SELECT project FROM requests r2 WHERE r2.session_id = r.session_id
+                    ORDER BY ts LIMIT 1),
+                   MIN(ts), MAX(ts)
+            FROM requests r {where} GROUP BY session_id ORDER BY MIN(ts)
+        """  # noqa: S608
+        for row in self._conn.execute(query, params):
+            yield row[0], row[1], datetime.fromisoformat(row[2]), datetime.fromisoformat(row[3])
+
+    def upsert_outcomes(self, outcomes: Iterable[SessionOutcome]) -> None:
+        rows = [
+            (
+                o.session_id,
+                o.repo,
+                o.commits,
+                o.files_changed,
+                o.lines_added,
+                o.lines_removed,
+                _ts(o.window_end),
+                o.refs_hash,
+            )
+            for o in outcomes
+        ]
+        with self._conn:
+            self._conn.executemany(
+                f"INSERT OR REPLACE INTO session_outcomes VALUES ({', '.join('?' * 8)})",  # noqa: S608
+                rows,
+            )
+
+    def delete_outcomes(self, session_ids: Iterable[str]) -> None:
+        with self._conn:
+            self._conn.executemany(
+                "DELETE FROM session_outcomes WHERE session_id = ?", [(s,) for s in session_ids]
+            )
+
+    def outcomes(self) -> dict[str, SessionOutcome]:
+        rows = self._conn.execute("SELECT * FROM session_outcomes ORDER BY session_id")
+        return {
+            row[0]: SessionOutcome(
+                session_id=row[0],
+                repo=row[1],
+                commits=row[2],
+                files_changed=row[3],
+                lines_added=row[4],
+                lines_removed=row[5],
+                window_end=datetime.fromisoformat(row[6]),
+                refs_hash=row[7],
+            )
+            for row in rows
+        }
 
     # -- tool calls -----------------------------------------------------------
 

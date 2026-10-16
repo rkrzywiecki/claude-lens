@@ -23,7 +23,7 @@ from claude_lens.insights.thresholds import KITCHEN_SINK_PEAK_TOKENS as KITCHEN_
 from claude_lens.insights.thresholds import KITCHEN_SINK_PROMPTS as KITCHEN_SINK_PROMPTS
 from claude_lens.insights.thresholds import NEAR_LIMIT_SHARE as NEAR_LIMIT_SHARE
 from claude_lens.insights.whatif import reprice
-from claude_lens.models import RequestRecord
+from claude_lens.models import GroupBy, RequestRecord
 from claude_lens.pricing import Pricing, normalize_model
 from claude_lens.report import shorten_home
 
@@ -70,6 +70,12 @@ API_CACHE_MIN_PROMPT = 4_096
 API_LARGE_MAX_TOKENS = 16_000
 API_BATCH_MIN_REQUESTS = 50
 API_BATCH_DISCOUNT = 0.5
+# Outcomes (git commits). Must match outcomes.GRACE.
+OUTCOME_GRACE_MINUTES = 30
+NO_COMMIT_MIN_COST = 2.0
+OUTCOME_MIN_SESSIONS = 5
+OUTCOME_MIN_COMMITS = 5
+OUTCOME_COST_RATIO = 1.5
 
 
 class RuleContext(BaseModel):
@@ -835,6 +841,112 @@ def api_batch_candidates(ctx: RuleContext) -> list[Insight]:
     ]
 
 
+# -- outcomes: git commits, a rough proxy (correlation only) --------------------------
+
+
+def edits_without_commit(ctx: RuleContext) -> list[Insight]:
+    """Costly sessions in a git repository that edited files and committed nothing."""
+    editing = [s for s in claude_code_sessions(ctx) if s.outcome is not None and s.edits]
+    picked = [
+        s
+        for s in editing
+        if s.outcome is not None and s.outcome.commits == 0 and s.cost >= NO_COMMIT_MIN_COST
+    ]
+    if not picked:
+        return []
+    spent = sum(s.cost for s in picked)
+    level = severity(spent, ctx.total_cost)
+    return [
+        insight(
+            ctx,
+            id="workflow.edits_without_commit",
+            category="workflow",
+            scope="claude_code",
+            title="Costly sessions that edited files but made no commit",
+            finding=(
+                f"{plural(len(picked), 'session')} costing ${spent:,.2f} edited files in a git "
+                f"repository but made no commit during the session or the "
+                f"{OUTCOME_GRACE_MINUTES} minutes after it ({len(picked)} of "
+                f"{len(editing)} editing sessions in git repositories)."
+            ),
+            recommendation=(
+                "Look at these first: an abandoned attempt is spend with nothing kept. If the "
+                "task was unclear or too large, start in plan mode with a written spec, work in "
+                "small verifiable steps and commit as you go; rewind to a checkpoint instead of "
+                "fixing forward. Work committed later, by hand or in another repository shows "
+                "up here too: commits are a rough proxy for outcome, not a quality measure."
+            ),
+            source=DOCS["best_practices"],
+            sessions=picked,
+            confidence="low",
+            # Not a saving; never ranked above medium.
+            level="medium" if level == "high" else level,
+        )
+    ]
+
+
+def _outcome_comparison(
+    ctx: RuleContext, group_by: GroupBy, what: str, category: str, source: str
+) -> list[Insight]:
+    # outcomes imports this module (is_project_dir), so import it here.
+    from claude_lens.outcomes import build_outcome_report
+
+    report = build_outcome_report(claude_code_sessions(ctx), group_by)
+    rows = [
+        r
+        for r in report.rows
+        if r.key != "unknown"
+        and r.sessions >= OUTCOME_MIN_SESSIONS
+        and r.commits >= OUTCOME_MIN_COMMITS
+        and r.cost_per_commit is not None
+    ]
+    if len(rows) < 2:
+        return []
+    rows.sort(key=lambda r: (r.cost_per_commit or 0.0, r.key))
+    cheap, dear = rows[0], rows[-1]
+    cheap_cpc, dear_cpc = cheap.cost_per_commit or 0.0, dear.cost_per_commit or 0.0
+    if not cheap_cpc or dear_cpc < cheap_cpc * OUTCOME_COST_RATIO:
+        return []
+    evidence = [
+        f"{r.key}: ${r.cost_per_commit or 0:,.2f} per commit, "
+        + (f"${r.cost_per_100_lines:,.2f} per 100 lines, " if r.cost_per_100_lines else "")
+        + f"{plural(r.sessions, 'session')}, {r.edits_no_commit} edited without a commit"
+        for r in rows
+    ]
+    return [
+        insight(
+            ctx,
+            id=f"{category}.outcome_cost_per_commit",
+            category=category,
+            scope="claude_code",
+            title=f"Cost per commit differs by {what} (correlation, not cause)",
+            finding=(
+                f"Sessions mostly on {dear.key} cost ${dear_cpc:,.2f} per commit, "
+                f"{dear_cpc / cheap_cpc:.1f}x the ${cheap_cpc:,.2f} of {cheap.key} "
+                f"({dear.sessions} and {cheap.sessions} sessions in git repositories)."
+            ),
+            recommendation=(
+                f"A correlation only: harder tasks tend to get a bigger {what}, and a commit "
+                "says nothing about quality. Use it to choose an experiment: run comparable "
+                f"tasks on {cheap.key} for a while, then compare cost per commit and sessions "
+                f"with edits but no commit in `claude-lens report --outcomes --by {group_by}`."
+            ),
+            source=source,
+            evidence=evidence,
+            confidence="low",
+            level="info",
+        )
+    ]
+
+
+def outcome_by_model(ctx: RuleContext) -> list[Insight]:
+    return _outcome_comparison(ctx, "model", "model", "model", DOCS["model_config"])
+
+
+def outcome_by_effort(ctx: RuleContext) -> list[Insight]:
+    return _outcome_comparison(ctx, "effort", "effort", "effort", DOCS["effort"])
+
+
 RULES: tuple[Rule, ...] = (
     big_model_light_sessions,
     big_model_subagents,
@@ -853,6 +965,9 @@ RULES: tuple[Rule, ...] = (
     api_high_effort_short,
     api_non_streaming_large,
     api_batch_candidates,
+    edits_without_commit,
+    outcome_by_model,
+    outcome_by_effort,
 )
 
 

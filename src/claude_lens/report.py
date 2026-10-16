@@ -53,6 +53,8 @@ def group_key(record: RequestRecord, group_by: GroupBy) -> str:
             return shorten_home(record.project)
         case "model":
             return normalize_model(record.model)
+        case "effort":
+            return record.effort or "unknown"
         case "session":
             return record.session_id
 

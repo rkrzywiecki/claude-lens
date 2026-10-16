@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     pricing_path: Path | None = None
     log_level: str = "WARNING"
 
+    # Git outcomes: read commits of sessions that ran in a local git repository.
+    git: bool = True
+    git_timeout: float = 10.0
+
     # Proxy (`claude-lens serve`).
     upstream_url: str = "https://api.anthropic.com"
     upstream_timeout: float = 600.0

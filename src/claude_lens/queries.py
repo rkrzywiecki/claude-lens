@@ -9,7 +9,9 @@ from pydantic import BaseModel
 from claude_lens.analysis.cache import CacheDoctorReport, diagnose
 from claude_lens.analysis.loops import LoopFinding, detect_loops
 from claude_lens.analysis.session import SessionDetail, session_detail
-from claude_lens.models import GroupBy, Report
+from claude_lens.insights.stats import build_session_stats
+from claude_lens.models import GroupBy, OutcomeReport, Report
+from claude_lens.outcomes import build_outcome_report
 from claude_lens.pricing import Pricing
 from claude_lens.report import build_report
 from claude_lens.store import Store
@@ -59,6 +61,16 @@ def report(
     return build_report(records, pricing, group_by, top)
 
 
+def outcome_report(
+    store: Store, pricing: Pricing, group_by: GroupBy, filters: Filters, top: int | None = None
+) -> OutcomeReport:
+    """Cost and git outcome of the sessions with requests in range (cost only in range)."""
+    records = store.requests(filters.since, filters.until, filters.project)
+    calls = store.tool_calls(filters.since, filters.until, project=filters.project)
+    sessions = build_session_stats(records, calls, {}, [], pricing, store.outcomes())
+    return build_outcome_report(sessions, group_by, top)
+
+
 def cache_doctor(
     store: Store, pricing: Pricing, filters: Filters, top: int | None = None
 ) -> CacheDoctorReport:
@@ -94,7 +106,8 @@ def session(store: Store, pricing: Pricing, prefix: str) -> SessionDetail:
     session_id = resolve_session(store, prefix)
     records = list(store.requests(session=session_id))
     calls = list(store.tool_calls(session=session_id))
-    return session_detail(records, calls, pricing)
+    detail = session_detail(records, calls, pricing)
+    return detail.model_copy(update={"outcome": store.outcomes().get(session_id)})
 
 
 def _local_midnight(day: date) -> datetime:

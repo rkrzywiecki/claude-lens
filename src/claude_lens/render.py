@@ -20,11 +20,24 @@ from claude_lens.insights.models import (
 )
 from claude_lens.insights.trends import changes
 from claude_lens.insights.whatif import WhatIf
-from claude_lens.models import ImportStats, Report, ReportRow
+from claude_lens.models import (
+    ImportStats,
+    OutcomeReport,
+    OutcomeRow,
+    Report,
+    ReportRow,
+    SessionOutcome,
+)
 from claude_lens.queries import LoopReport
 from claude_lens.report import shorten_home
 
-_GROUP_TITLES = {"day": "Day", "project": "Project", "model": "Model", "session": "Session"}
+_GROUP_TITLES = {
+    "day": "Day",
+    "project": "Project",
+    "model": "Model",
+    "effort": "Effort",
+    "session": "Session",
+}
 
 
 def render_import(console: Console, stats: ImportStats, total_records: int) -> None:
@@ -87,6 +100,68 @@ def _cells(row: ReportRow, name: str) -> list[str]:
         money(row.cost.cache_savings),
         cost,
     ]
+
+
+def render_outcome_report(console: Console, report: OutcomeReport) -> None:
+    if not report.rows:
+        console.print(
+            f"No sessions in a local git repository ({report.untracked_sessions} sessions "
+            "outside git). The project directory must still exist; see docs/outcomes.md."
+        )
+        return
+    by = "main model" if report.group_by == "model" else report.group_by
+    table = Table(title=f"Cost and git outcome by {by}", title_justify="left")
+    table.add_column(_GROUP_TITLES[report.group_by], overflow="fold")
+    table.add_column("Sessions", justify="right")
+    table.add_column("Commits", justify="right")
+    table.add_column("Files", justify="right")
+    table.add_column("+/- lines", justify="right")
+    table.add_column("Edits, no commit", justify="right")
+    table.add_column("Cost", justify="right")
+    table.add_column("Per commit", justify="right", style="bold")
+    table.add_column("Per 100 lines", justify="right")
+    for row in report.rows:
+        name = (
+            f"{row.key[:8]}  {row.label}" if report.group_by == "session" and row.label else row.key
+        )
+        table.add_row(*_outcome_cells(row, name))
+    table.add_section()
+    table.add_row(*_outcome_cells(report.total, "Total"), style="bold")
+    console.print(table)
+    left_out = (
+        f"{report.untracked_sessions} sessions outside a git repository "
+        f"({money(report.untracked_cost)}) are left out. "
+        if report.untracked_sessions
+        else ""
+    )
+    console.print(
+        f"[dim]{left_out}Commits made during a session or "
+        "30 minutes after it are a rough proxy for kept work, not for quality; differences "
+        "between models or effort levels are correlations.[/dim]"
+    )
+
+
+def _outcome_cells(row: OutcomeRow, name: str) -> list[str]:
+    return [
+        name,
+        f"{row.sessions:,}",
+        f"{row.commits:,}",
+        f"{row.files_changed:,}",
+        f"+{row.lines_added:,} / -{row.lines_removed:,}",
+        f"{row.edits_no_commit:,}",
+        money(row.cost),
+        "-" if row.cost_per_commit is None else money(row.cost_per_commit),
+        "-" if row.cost_per_100_lines is None else money(row.cost_per_100_lines),
+    ]
+
+
+def outcome_line(outcome: SessionOutcome | None) -> str:
+    if outcome is None:
+        return "Git: not in a local repository (no outcome)"
+    return (
+        f"Git: {outcome.commits} commits, {outcome.files_changed} files, "
+        f"+{outcome.lines_added:,} / -{outcome.lines_removed:,} lines"
+    )
 
 
 def money(value: float) -> str:
@@ -208,7 +283,7 @@ def render_session(console: Console, detail: SessionDetail) -> None:
         + ("-" if detail.cache.hit_ratio is None else f"{detail.cache.hit_ratio:.0%}")
         + f"\nContext: peak {tokens(ctx.peak_prompt_tokens)} tokens{peak_share}, "
         f"last {tokens(ctx.final_prompt_tokens)}, {ctx.average_growth:+,.0f} tokens per request, "
-        f"{ctx.resets} resets"
+        f"{ctx.resets} resets\n" + outcome_line(detail.outcome)
     )
     table = Table(title_justify="left")
     table.add_column("Time")
@@ -272,6 +347,14 @@ def render_insights(console: Console, report: InsightsReport) -> None:
         f"  Thinking share of output: {_pct(p.thinking_share)}, subagents' share of cost: "
         f"{_pct(p.subagent_cost_share)}, cache hit ratio: {_pct(p.cache_hit_ratio)}\n"
     )
+    if p.outcomes:
+        o = p.outcomes.total
+        per_commit = "-" if o.cost_per_commit is None else money(o.cost_per_commit)
+        console.print(
+            f"  Git outcome ({o.sessions} sessions in repositories, "
+            f"{p.outcomes.untracked_sessions} outside): {o.commits} commits, "
+            f"{per_commit} per commit, {o.edits_no_commit} edited without a commit\n"
+        )
     if report.compare:
         render_comparison(console, report.compare)
     if not report.insights:

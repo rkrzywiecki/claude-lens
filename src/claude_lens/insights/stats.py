@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from claude_lens.analysis.cache import SessionCache, session_misses
 from claude_lens.analysis.loops import EDIT_TOOLS, LoopFinding
-from claude_lens.models import RequestRecord, SessionMeta, ToolCall
+from claude_lens.models import RequestRecord, SessionMeta, SessionOutcome, ToolCall
 from claude_lens.pricing import Pricing, normalize_model
 
 READ_TOOLS = frozenset({"Read", "Grep", "Glob", "LS", "NotebookRead"})
@@ -51,6 +51,10 @@ class SessionStats(BaseModel):
     cache: SessionCache | None = None
     loops: list[LoopFinding] = Field(default_factory=list)
     meta: SessionMeta | None = None
+    # API-equivalent cost per (normalized) model.
+    model_costs: dict[str, float] = Field(default_factory=dict)
+    # Commits in the session's git repository; None when it ran outside one.
+    outcome: SessionOutcome | None = None
 
     @property
     def edits(self) -> int:
@@ -92,8 +96,23 @@ class SessionStats(BaseModel):
         return self.cache.counts["context_reset"] if self.cache else 0
 
     @property
+    def main_model(self) -> str | None:
+        """The model that cost the most in this session."""
+        return dominant(self.model_costs)
+
+    @property
+    def main_effort(self) -> str | None:
+        """The effort most requests ran at."""
+        return dominant(self.efforts)
+
+    @property
     def label(self) -> str:
         return f"{self.session_id[:8]} {self.started.astimezone():%Y-%m-%d %H:%M}"
+
+
+def dominant(values: Counter[str] | dict[str, float]) -> str | None:
+    """The key with the largest value (ties: alphabetical)."""
+    return min(values, key=lambda k: (-values[k], k)) if values else None
 
 
 def build_session_stats(
@@ -102,6 +121,7 @@ def build_session_stats(
     metas: dict[str, SessionMeta],
     loops: list[LoopFinding],
     pricing: Pricing,
+    outcomes: dict[str, SessionOutcome] | None = None,
 ) -> list[SessionStats]:
     by_session: dict[str, list[RequestRecord]] = defaultdict(list)
     for record in records:
@@ -127,6 +147,7 @@ def build_session_stats(
             cache=session_misses(session_records, pricing),
             loops=loops_by_session.get(session_id, []),
             meta=metas.get(session_id),
+            outcome=(outcomes or {}).get(session_id),
         )
         for record in session_records:
             _add(stats, record, calls_by_message.get(record.message_id, []), pricing)
@@ -141,6 +162,8 @@ def _add(
     cost = pricing.cost(record.model, record.usage, record.speed)
     amount = cost.total if cost else 0.0
     stats.cost += amount
+    model = normalize_model(record.model)
+    stats.model_costs[model] = stats.model_costs.get(model, 0.0) + amount
     big = is_big_model(record.model)
     tools = stats.subagent_tool_counts if record.is_sidechain else stats.main_tool_counts
     if record.is_sidechain:
