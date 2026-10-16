@@ -58,8 +58,14 @@ in a row, 5 edits of one file per session). Treat findings as pointers to look a
 **The dashboard shows old numbers.** Click **Import new transcripts**; proxy records appear as
 soon as they are written.
 
-**`Coach: no Claude API credentials`.** Set `ANTHROPIC_API_KEY`, or run `ant auth login`, in
-the environment where the CLI or dashboard runs. `insights` without `--coach` needs neither.
+**`Coach: no Claude API credentials ... and no claude CLI`.** Either set `ANTHROPIC_API_KEY`
+(or run `ant auth login`) where the CLI or dashboard runs, or install and sign in to Claude Code
+so `claude -p` works. A key exported in one terminal tab is not visible to other shells. `insights`
+without `--coach` needs neither.
+
+**`Coach: Claude Code reported an error`.** Run `claude auth status`; if you are not signed in,
+run `claude` once and log in. With `LENS_COACH_BACKEND=claude-code` the coach never uses an API
+key from claude-lens.
 
 **`Coach: model ... not found` or an API error.** Check `LENS_COACH_MODEL` (a model id such as
 `claude-opus-5-5`). Rate limits and outages are reported as they come from the API.

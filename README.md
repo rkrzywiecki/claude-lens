@@ -37,8 +37,9 @@ and loop detection, dashboard, insights. See [Roadmap](#roadmap).
 - Claude Code transcripts on disk (`~/.claude/projects`), the proxy, or both. claude-lens needs
   no API key of its own: the importer calls no API, and the proxy forwards the client's
   credentials (`ANTHROPIC_API_KEY` or a Claude Code login) unchanged.
-- Only the optional coach (`insights --coach`) calls the Claude API: it needs
-  `ANTHROPIC_API_KEY` or an `ant auth login` profile.
+- Only the optional coach (`insights --coach`) talks to Claude: through the API when
+  `ANTHROPIC_API_KEY` (or an `ant auth login` profile) is set, otherwise through your signed-in
+  Claude Code CLI (`claude -p`), so a claude.ai subscription is enough.
 
 ## Installation
 
@@ -139,7 +140,9 @@ pass/warn/fail for practices from the Claude Code and Claude API documentation. 
 reprices any slice of traffic on another model.
 
 `--coach` adds a short plan written by Claude from the aggregated numbers only (no paths,
-session ids or prompts; `--dry-run` shows the payload), in the language of your choice. Logs show
+session ids or prompts; `--dry-run` shows the payload), in the language of your choice. It uses
+the API when a key is set, otherwise your Claude Code login, so it works on a subscription
+without an API key. Logs show
 cost, not quality: cheaper models and lower effort are presented as experiments. Details, rules
 and thresholds: [docs/insights.md](docs/insights.md).
 
@@ -215,7 +218,9 @@ Settings come from environment variables (or `.env`):
 | `LENS_COACH_MODEL` | `claude-opus-5-5` | Coach: model that writes the plan |
 | `LENS_COACH_EFFORT` | `medium` | Coach: effort level |
 | `LENS_COACH_LANGUAGE` | `English` | Coach: language of the plan |
-| `LENS_COACH_TIMEOUT` | `120` | Coach: API timeout in seconds |
+| `LENS_COACH_TIMEOUT` | `120` | Coach: timeout in seconds |
+| `LENS_COACH_BACKEND` | `auto` | Coach: `api`, `claude-code` (`claude -p` with your Claude Code login) or `auto` |
+| `LENS_COACH_CLAUDE_BIN` | `claude` | Coach: Claude Code CLI for the `claude-code` backend |
 
 Prices live in [`src/claude_lens/data/pricing.yaml`](src/claude_lens/data/pricing.yaml) (USD per
 million tokens). To change or add a model, copy the file, edit it and point `LENS_PRICING_PATH` at

@@ -131,6 +131,8 @@ def create_dashboard(
                 lang or settings.coach_language,
                 client=coach_client,
                 timeout=settings.coach_timeout,
+                backend=settings.coach_backend,
+                claude_bin=settings.coach_claude_bin,
             )
         except CoachError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc

@@ -446,7 +446,13 @@ def test_coach_without_fallbacks_for_haiku(pricing: Pricing) -> None:
 def test_coach_errors(pricing: Pricing) -> None:
     report = sample_report(pricing)
     with pytest.raises(CoachError, match="credentials"):
-        run_coach(report, pricing, "claude-opus-5-5", client=fake_client(FakeMessages(), False))
+        run_coach(
+            report,
+            pricing,
+            "claude-opus-5-5",
+            client=fake_client(FakeMessages(), False),
+            backend="api",
+        )
     with pytest.raises(CoachError, match="declined"):
         run_coach(
             report,
@@ -542,7 +548,7 @@ def test_dashboard_insights_and_coach(tmp_path: Path, pricing: Pricing) -> None:
     assert "Polish" in messages.request["messages"][0]["content"]
 
     failing = create_dashboard(
-        settings,
+        settings.model_copy(update={"coach_backend": "api"}),
         open_store=lambda: Store(db),
         pricing=pricing,
         coach_client=cast(Any, fake_client(FakeMessages(), credentials=False)),
@@ -551,3 +557,99 @@ def test_dashboard_insights_and_coach(tmp_path: Path, pricing: Pricing) -> None:
         "/api/coach", headers={"x-lens-request": "1"}
     )
     assert response.status_code == 503
+
+
+# -- coach through the Claude Code CLI -----------------------------------------------------
+
+FAKE_CLAUDE = """#!{python}
+import json, os, sys
+args = sys.argv[1:]
+prompt = sys.stdin.read()
+with open({log!r}, "w") as fh:
+    json.dump({{"args": args, "cwd": os.getcwd(), "prompt": prompt}}, fh)
+mode = {mode!r}
+if mode == "ok":
+    print(json.dumps({{
+        "type": "result", "subtype": "success", "is_error": False,
+        "result": "## Plan\\n- clear more often",
+        "total_cost_usd": 0.0123,
+        "usage": {{"input_tokens": 3000, "output_tokens": 400,
+                   "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}},
+        "modelUsage": {{"claude-opus-5-5": {{}}}},
+    }}))
+elif mode == "error":
+    print(json.dumps({{"type": "result", "subtype": "error_during_execution", "is_error": True,
+                      "result": "Not logged in"}}))
+    sys.exit(1)
+else:
+    print("boom", file=sys.stderr)
+    sys.exit(2)
+"""
+
+
+def fake_cli(tmp_path: Path, mode: str) -> tuple[str, Path]:
+    import sys
+
+    log = tmp_path / f"cli-{mode}.json"
+    script = tmp_path / f"claude-{mode}"
+    script.write_text(FAKE_CLAUDE.format(python=sys.executable, log=str(log), mode=mode))
+    script.chmod(0o755)
+    return str(script), log
+
+
+def test_coach_through_claude_code(tmp_path: Path, pricing: Pricing) -> None:
+    claude_bin, log = fake_cli(tmp_path, "ok")
+    no_key = cast(Any, fake_client(FakeMessages(), credentials=False))
+    result = run_coach(
+        sample_report(pricing),
+        pricing,
+        "claude-opus-5-5",
+        "low",
+        "Polish",
+        client=no_key,
+        claude_bin=claude_bin,
+    )
+    assert (result.backend, result.model, result.cost) == ("claude-code", "claude-opus-5-5", 0.0123)
+    assert result.text.startswith("## Plan")
+    assert result.usage.output_tokens == 400
+    call = json.loads(log.read_text())
+    args = call["args"]
+    assert args[:3] == ["-p", "--output-format", "json"]
+    assert args[args.index("--tools") + 1] == ""
+    assert args[args.index("--model") + 1] == "claude-opus-5-5"
+    assert args[args.index("--effort") + 1] == "low"
+    assert "--no-session-persistence" in args
+    assert "--system-prompt" in args
+    assert "Write the report in Polish" in call["prompt"]
+    assert "claude-lens-coach-" in call["cwd"]  # an empty temporary directory
+
+
+def test_coach_prefers_api_when_credentials_exist(tmp_path: Path, pricing: Pricing) -> None:
+    claude_bin, log = fake_cli(tmp_path, "ok")
+    messages = FakeMessages(message())
+    result = run_coach(
+        sample_report(pricing),
+        pricing,
+        "claude-opus-5-5",
+        client=cast(Any, fake_client(messages)),
+        claude_bin=claude_bin,
+    )
+    assert result.backend == "api"
+    assert not log.exists()
+
+
+def test_coach_claude_code_errors(tmp_path: Path, pricing: Pricing) -> None:
+    report = sample_report(pricing)
+    for mode, match in (("error", "Not logged in"), ("crash", "boom")):
+        claude_bin, _ = fake_cli(tmp_path, mode)
+        with pytest.raises(CoachError, match=match):
+            run_coach(
+                report, pricing, "claude-opus-5-5", backend="claude-code", claude_bin=claude_bin
+            )
+    with pytest.raises(CoachError, match="not found"):
+        run_coach(
+            report, pricing, "claude-opus-5-5", backend="claude-code", claude_bin="/no/such/cli"
+        )
+    no_key = cast(Any, fake_client(FakeMessages(), credentials=False))
+    with pytest.raises(CoachError, match=r"no Claude API credentials .* and no"):
+        run_coach(report, pricing, "claude-opus-5-5", client=no_key, claude_bin="no-such-cli-x")

@@ -296,9 +296,16 @@ def render_insights(console: Console, report: InsightsReport) -> None:
 def render_coach(console: Console, result: CoachResult) -> None:
     console.rule("Coach")
     console.print(Markdown(result.text))
-    cost = f", {money(result.cost)}" if result.cost is not None else ""
+    cost = ""
+    if result.cost is not None:
+        note = (
+            " API-equivalent, not billed on a subscription"
+            if result.backend == "claude-code"
+            else ""
+        )
+        cost = f", {money(result.cost)}{note}"
     console.print(
-        f"[dim]{result.model}, {tokens(result.usage.prompt_tokens)} in / "
+        f"[dim]{result.model} via {result.backend}, {tokens(result.usage.prompt_tokens)} in / "
         f"{tokens(result.usage.output_tokens)} out{cost}[/dim]"
     )
 

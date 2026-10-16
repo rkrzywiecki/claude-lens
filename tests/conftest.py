@@ -73,6 +73,8 @@ def _isolated_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Itera
     monkeypatch.setenv("LENS_DB_PATH", str(tmp_path / "lens.db"))
     monkeypatch.setenv("LENS_TRANSCRIPTS_DIR", str(tmp_path / "projects"))
     monkeypatch.delenv("LENS_PRICING_PATH", raising=False)
+    # Never reach a real Claude Code CLI (it would spend the user's plan) from a test.
+    monkeypatch.setenv("LENS_COACH_CLAUDE_BIN", "claude-lens-test-no-such-cli")
     monkeypatch.chdir(tmp_path)
     get_settings.cache_clear()
     yield

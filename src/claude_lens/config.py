@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -34,6 +35,9 @@ class Settings(BaseSettings):
     coach_effort: str = "medium"
     coach_language: str = "English"
     coach_timeout: float = 120.0
+    # auto: the API when the SDK finds credentials, else the Claude Code CLI (`claude -p`).
+    coach_backend: Literal["auto", "api", "claude-code"] = "auto"
+    coach_claude_bin: str = "claude"
 
     def resolved_db_path(self) -> Path:
         return self.db_path.expanduser()

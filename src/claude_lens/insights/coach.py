@@ -1,19 +1,31 @@
 """LLM coach: Claude turns the insights report into a short, prioritized plan.
 
-Opt-in, because it calls the Claude API (and costs a few cents). Only aggregates leave the
-machine: the usage profile, each insight's title, finding, recommendation, savings and
-confidence, and the practice scorecard. Session ids, project paths and evidence lists are not
-sent, and claude-lens never stores prompt content to begin with. `coach_payload` returns exactly
-what would be sent, for `--dry-run`.
+Opt-in, because it sends data to Claude. Only aggregates leave the machine: the usage profile,
+each insight's title, finding, recommendation, savings and confidence, and the practice
+scorecard. Session ids, project paths and evidence lists are not sent, and claude-lens never
+stores prompt content to begin with. `coach_payload` returns exactly what would be sent, for
+`--dry-run`.
 
-Credentials come from the Anthropic SDK's own resolution (ANTHROPIC_API_KEY, an auth token, or
-an `ant auth login` profile).
+Two backends:
+
+- `api`: the Claude API through the Anthropic SDK. Credentials come from the SDK's own
+  resolution (ANTHROPIC_API_KEY, an auth token, or an `ant auth login` profile); billed per
+  token, a few cents per report.
+- `claude-code`: the local Claude Code CLI in print mode (`claude -p`), with all tools off, a
+  fixed system prompt, no saved session, run in an empty temporary directory so no project
+  CLAUDE.md or project settings load. It uses whatever Claude Code is signed in with, so a
+  claude.ai subscription works without an API key (the request counts against the plan).
+
+`auto` picks `api` when the SDK finds credentials, else `claude-code` when the CLI is on PATH.
 """
 
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+import shutil
+import subprocess
+import tempfile
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
 
@@ -58,6 +70,9 @@ shows struggling.
 """
 
 
+Backend = Literal["auto", "api", "claude-code"]
+
+
 class CoachError(RuntimeError):
     """The coach could not produce a report (credentials, API error, refusal)."""
 
@@ -65,7 +80,9 @@ class CoachError(RuntimeError):
 class CoachResult(BaseModel):
     text: str
     model: str
+    backend: Literal["api", "claude-code"]
     usage: Usage
+    # API-equivalent cost; on a subscription (claude-code backend) nothing is billed per token.
     cost: float | None
 
 
@@ -123,27 +140,57 @@ def run_coach(
     language: str = "English",
     client: anthropic.Anthropic | None = None,
     timeout: float = 120.0,
+    backend: Backend = "auto",
+    claude_bin: str = "claude",
+) -> CoachResult:
+    prompt = user_prompt(report, language)
+    chosen = backend
+    if backend == "auto":
+        if client is None:
+            client = _sdk_client(timeout)
+        if _has_credentials(client):
+            chosen = "api"
+        elif shutil.which(claude_bin):
+            chosen = "claude-code"
+        else:
+            raise CoachError(
+                "no Claude API credentials (ANTHROPIC_API_KEY or `ant auth login`) and no "
+                f"`{claude_bin}` CLI on PATH to use a Claude Code login instead"
+            )
+    if chosen == "claude-code":
+        return _run_claude_code(prompt, pricing, model, effort, timeout, claude_bin)
+    return _run_api(prompt, pricing, model, effort, client or _sdk_client(timeout))
+
+
+def user_prompt(report: InsightsReport, language: str) -> str:
+    return f"Write the report in {language}. Here is the analysis as JSON:\n\n" + json.dumps(
+        coach_payload(report, language), indent=1
+    )
+
+
+def _sdk_client(timeout: float) -> anthropic.Anthropic:
+    import anthropic
+
+    return anthropic.Anthropic(timeout=timeout, max_retries=2)
+
+
+def _has_credentials(client: anthropic.Anthropic) -> bool:
+    return bool(client.api_key or client.auth_token or client.credentials is not None)
+
+
+def _run_api(
+    prompt: str, pricing: Pricing, model: str, effort: str, client: anthropic.Anthropic
 ) -> CoachResult:
     import anthropic
 
-    client = client or anthropic.Anthropic(timeout=timeout, max_retries=2)
-    if not (client.api_key or client.auth_token or client.credentials is not None):
+    if not _has_credentials(client):
         raise CoachError("no Claude API credentials: set ANTHROPIC_API_KEY or run `ant auth login`")
-    payload = coach_payload(report, language)
     request: dict[str, Any] = {
         "model": model,
         "max_tokens": MAX_TOKENS,
         "system": SYSTEM_PROMPT,
         "output_config": {"effort": effort},
-        "messages": [
-            {
-                "role": "user",
-                "content": (
-                    f"Write the report in {language}. Here is the analysis as JSON:\n\n"
-                    + json.dumps(payload, indent=1)
-                ),
-            }
-        ],
+        "messages": [{"role": "user", "content": prompt}],
     }
     if normalize_model(model) in _FALLBACK_MODELS:
         request["betas"] = [FALLBACK_BETA]
@@ -173,8 +220,81 @@ def run_coach(
     )
     cost = pricing.cost(message.model, usage)
     return CoachResult(
-        text=text, model=message.model, usage=usage, cost=cost.total if cost else None
+        text=text,
+        model=message.model,
+        backend="api",
+        usage=usage,
+        cost=cost.total if cost else None,
     )
+
+
+def _run_claude_code(
+    prompt: str, pricing: Pricing, model: str, effort: str, timeout: float, claude_bin: str
+) -> CoachResult:
+    command = [
+        claude_bin,
+        "-p",
+        "--output-format",
+        "json",
+        "--tools",
+        "",
+        "--system-prompt",
+        SYSTEM_PROMPT,
+        "--model",
+        model,
+        "--effort",
+        effort,
+        "--no-session-persistence",
+    ]
+    # An empty working directory: no project CLAUDE.md, settings or hooks get involved.
+    with tempfile.TemporaryDirectory(prefix="claude-lens-coach-") as cwd:
+        try:
+            done = subprocess.run(  # noqa: S603 - fixed argv, no shell
+                command,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=cwd,
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise CoachError(f"`{claude_bin}` CLI not found") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise CoachError(f"Claude Code did not answer within {timeout:.0f} s") from exc
+    try:
+        result = json.loads(done.stdout)
+    except ValueError:
+        detail = (done.stderr or done.stdout).strip().splitlines()[-1:] or ["no output"]
+        raise CoachError(f"Claude Code failed (exit {done.returncode}): {detail[0]}") from None
+    if not isinstance(result, dict):
+        raise CoachError("Claude Code returned unexpected output")
+    text = result.get("result")
+    if result.get("is_error") or done.returncode != 0:
+        raise CoachError(f"Claude Code reported an error: {text or result.get('subtype')}")
+    if not isinstance(text, str) or not text.strip():
+        raise CoachError("the model returned no text")
+    raw_usage = result.get("usage")
+    raw: dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
+    usage = Usage(
+        input_tokens=_count(raw.get("input_tokens")),
+        output_tokens=_count(raw.get("output_tokens")),
+        cache_read_tokens=_count(raw.get("cache_read_input_tokens")),
+        cache_write_5m_tokens=_count(raw.get("cache_creation_input_tokens")),
+    )
+    models = result.get("modelUsage")
+    used = next(iter(models), model) if isinstance(models, dict) and models else model
+    reported = result.get("total_cost_usd")
+    if isinstance(reported, int | float):
+        cost: float | None = float(reported)
+    else:
+        priced = pricing.cost(used, usage)
+        cost = priced.total if priced else None
+    return CoachResult(text=text.strip(), model=used, backend="claude-code", usage=usage, cost=cost)
+
+
+def _count(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
 
 
 def _round(value: float | None) -> float | None:

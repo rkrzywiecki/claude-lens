@@ -279,6 +279,8 @@ def insights(
                     settings.coach_effort,
                     lang,
                     timeout=settings.coach_timeout,
+                    backend=settings.coach_backend,
+                    claude_bin=settings.coach_claude_bin,
                 )
         except CoachError as exc:
             raise _fail(f"Coach: {exc}.") from exc

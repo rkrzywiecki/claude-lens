@@ -113,9 +113,18 @@ most, a model and effort plan, what you already do well, and what to measure nex
   `medium`), with server-side fallbacks (`fallbacks: "default"`) on models that support them. A
   refusal is reported as an error.
 - **Language:** `--lang` or `LENS_COACH_LANGUAGE` (default English).
-- **Credentials:** the Anthropic SDK's own resolution: `ANTHROPIC_API_KEY`, an auth token, or an
-  `ant auth login` profile. Without them the command fails with a clear message.
-- **Cost:** one request with a few thousand input tokens: cents. The CLI prints the model,
-  token counts and cost.
+- **Backend** (`LENS_COACH_BACKEND`, default `auto`):
+  - `api`: the Claude API through the Anthropic SDK, with its own credential resolution
+    (`ANTHROPIC_API_KEY`, an auth token, or an `ant auth login` profile). Billed per token: one
+    request with a few thousand input tokens costs cents.
+  - `claude-code`: the local Claude Code CLI (`claude -p`, binary from `LENS_COACH_CLAUDE_BIN`)
+    with every tool turned off (`--tools ""`), the coach's own system prompt, no saved session,
+    run in an empty temporary directory so no project CLAUDE.md, settings or hooks load. It uses
+    whatever Claude Code is signed in with, so a claude.ai subscription works **without an API
+    key**; the request counts against the plan's usage limits instead of being billed.
+  - `auto`: `api` when the SDK finds credentials, otherwise `claude-code` when the CLI is on
+    PATH, otherwise a clear error.
+- **Cost:** the CLI prints the model, the backend, token counts and the API-equivalent cost
+  (on a subscription nothing is billed per token).
 
 The dashboard has the same coach behind **Ask Claude for a plan**.

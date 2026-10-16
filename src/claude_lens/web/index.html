@@ -233,7 +233,7 @@ h3 { font-size: 14px; margin: 20px 0 8px; font-weight: 600; }
           </select>
         </label>
       </div>
-      <p class="muted" style="font-size:12px;margin:6px 0 0">Sends only aggregated numbers and the findings above (no paths, session ids or prompts) to the Claude API. Costs a few cents. Needs ANTHROPIC_API_KEY or an <code>ant auth login</code> profile where the dashboard runs.</p>
+      <p class="muted" style="font-size:12px;margin:6px 0 0">Sends only aggregated numbers and the findings above (no paths, session ids or prompts) to the Claude API. Uses ANTHROPIC_API_KEY (a few cents per report) or, without one, your Claude Code login (<code>claude -p</code>, counts against your plan).</p>
       <div class="coach-out" id="coach-out" aria-live="polite"></div>
     </div>
   </section>
@@ -755,8 +755,9 @@ async function askCoach() {
     const res = await fetch("/api/coach?" + params, { method: "POST", headers: { "x-lens-request": "1" } });
     const body = await res.json();
     if (!res.ok) throw new Error(body.detail || res.statusText);
-    const cost = body.cost != null ? `, ${money(body.cost)}` : "";
-    out.replaceChildren(...renderMarkdown(body.text), el("p", { class: "muted", text: `${body.model}${cost}` }));
+    const note = body.backend === "claude-code" ? " API-equivalent, not billed on a subscription" : "";
+    const cost = body.cost != null ? `, ${money(body.cost)}${note}` : "";
+    out.replaceChildren(...renderMarkdown(body.text), el("p", { class: "muted", text: `${body.model} via ${body.backend}${cost}` }));
   } catch (err) {
     out.replaceChildren(el("p", { class: "badge bad", text: "▲ Coach unavailable: " + err.message }));
   } finally {
