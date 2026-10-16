@@ -1,6 +1,6 @@
 [project]
 name = "claude-lens"
-version = "0.1.0"
+version = "0.1.1"
 description = "Cost, cache and efficiency analytics for Claude: Claude Code transcripts and API traffic"
 readme = "README.md"
 license = "Apache-2.0"

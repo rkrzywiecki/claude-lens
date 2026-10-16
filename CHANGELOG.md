@@ -6,6 +6,8 @@ All notable changes to claude-lens. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-16
+
 ### Fixed
 
 - The store closes its SQLite connection when it refuses a database (newer schema, not a
@@ -47,5 +49,6 @@ First release. Everything runs locally; prompt contents are never stored.
 - **Tooling.** CI on Python 3.12 and 3.13 (ruff, mypy strict, pytest with coverage); the test
   suite fails on any warning and never uses the network, a Claude login or an API key.
 
-[Unreleased]: https://github.com/rkrzywiecki/claude-lens/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/rkrzywiecki/claude-lens/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/rkrzywiecki/claude-lens/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/rkrzywiecki/claude-lens/releases/tag/v0.1.0
