@@ -435,3 +435,41 @@ def test_report_by_effort_without_outcomes(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert [r["key"] for r in json.loads(result.output)["rows"]] == ["unknown"]
 
+
+def test_dashboard_import_reads_git_and_shows_outcomes(tmp_path: Path) -> None:
+    from fastapi.testclient import TestClient
+
+    from claude_lens.config import Settings
+    from claude_lens.web.app import create_dashboard
+
+    two_sessions(tmp_path)
+    db = tmp_path / "lens.db"
+    settings = Settings(db_path=db, transcripts_dir=tmp_path / "projects")
+    client = TestClient(
+        create_dashboard(settings, open_store=lambda: Store(db)), base_url="http://127.0.0.1"
+    )
+    assert client.post("/api/import", headers={"x-lens-request": "1"}).status_code == 200
+    summary = client.get("/api/summary").json()
+    assert summary["outcomes"]["total"]["commits"] == 1
+    assert summary["outcomes"]["untracked_sessions"] == 1
+    detail = client.get("/api/sessions/opus-sess").json()
+    assert detail["outcome"]["lines_added"] == 20
+    assert client.get("/api/sessions/notes-sess").json()["outcome"] is None
+    page = client.get("/").text
+    assert 'id="k-commit"' in page and "s.outcome" in page
+
+
+def test_dashboard_without_git(tmp_path: Path) -> None:
+    from fastapi.testclient import TestClient
+
+    from claude_lens.config import Settings
+    from claude_lens.web.app import create_dashboard
+
+    two_sessions(tmp_path)
+    db = tmp_path / "lens.db"
+    settings = Settings(db_path=db, transcripts_dir=tmp_path / "projects", git=False)
+    client = TestClient(
+        create_dashboard(settings, open_store=lambda: Store(db)), base_url="http://127.0.0.1"
+    )
+    client.post("/api/import", headers={"x-lens-request": "1"})
+    assert client.get("/api/summary").json()["outcomes"]["total"]["sessions"] == 0

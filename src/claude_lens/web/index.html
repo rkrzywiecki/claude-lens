@@ -104,7 +104,7 @@ select, .btn {
 .btn { cursor: pointer; }
 .btn:hover { background: var(--hover); }
 #status { color: var(--muted); font-size: 13px; }
-.kpis { display: grid; grid-template-columns: 1.4fr repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+.kpis { display: grid; grid-template-columns: 1.4fr repeat(5, 1fr); gap: 12px; margin-bottom: 16px; }
 .card {
   background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
   padding: 16px; min-width: 0;
@@ -222,6 +222,7 @@ h3 { font-size: 14px; margin: 20px 0 8px; font-weight: 600; }
     <div class="card kpi"><div class="label">Cache hit ratio</div><div class="value" id="k-hit">-</div><div class="note">of all prompt tokens</div></div>
     <div class="card kpi"><div class="label">Saved by caching</div><div class="value" id="k-saved">-</div><div class="note">vs. no caching</div></div>
     <div class="card kpi"><div class="label">Avoidable cache loss</div><div class="value" id="k-loss">-</div><div class="note" id="k-loss-note">top sessions</div></div>
+    <div class="card kpi" title="Cost of sessions in git repositories divided by the commits made during them (or 30 minutes after). A rough proxy for kept work, not for quality; sessions outside git are left out."><div class="label">Cost per commit</div><div class="value" id="k-commit">-</div><div class="note" id="k-commit-note">sessions in git repositories</div></div>
   </section>
 
   <section class="card" id="insights-card" style="margin-bottom:16px">
@@ -763,6 +764,11 @@ function renderSummary(data) {
   document.getElementById("k-saved").textContent = money(total.cost.cache_savings);
   document.getElementById("k-loss").textContent = money(data.cache.avoidable_penalty);
   document.getElementById("k-loss-note").textContent = `of ${money(data.cache.penalty)} lost to misses`;
+  const out = data.outcomes.total;
+  document.getElementById("k-commit").textContent = out.cost_per_commit == null ? "-" : money(out.cost_per_commit);
+  document.getElementById("k-commit-note").textContent = out.sessions
+    ? `${out.commits} commits in ${out.sessions} git sessions · ${out.edits_no_commit} edited, no commit`
+    : `no sessions in a git repository (${data.outcomes.untracked_sessions} outside git)`;
 
   legend(document.getElementById("day-legend"), KINDS.slice().reverse().map((k) => ({ key: swatch(k.color), label: k.label })));
   dayChart(document.getElementById("day-chart"), fillDays(data.by_day.rows));
@@ -936,6 +942,12 @@ async function openSession(id) {
     ["Hit ratio", pct(s.cache.hit_ratio)],
     ["Peak context", tokens(s.context.peak_prompt_tokens) + (s.context.peak_share != null ? ` (${pct(s.context.peak_share)} of window)` : "")],
     ["Resets", String(s.context.resets)],
+    ...(s.outcome ? [
+      ["Commits", String(s.outcome.commits)],
+      ["Files", String(s.outcome.files_changed)],
+      ["Lines", `+${s.outcome.lines_added.toLocaleString("en-US")} / -${s.outcome.lines_removed.toLocaleString("en-US")}`],
+      ["Per commit", s.outcome.commits ? money(s.cost / s.outcome.commits) : "-"],
+    ] : [["Git", "not in a repository"]]),
   ];
   document.getElementById("session-facts").replaceChildren(...facts.map(([k, v]) => el("span", {}, document.createTextNode(k + " "), el("b", { text: v }))));
   const tri = el("span", { class: "badge bad", text: "▲" }), dia = el("span", { class: "badge neutral", text: "◆" });

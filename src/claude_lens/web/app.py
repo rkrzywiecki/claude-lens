@@ -28,7 +28,8 @@ from claude_lens.insights.coach import CoachError, CoachResult, run_coach
 from claude_lens.insights.engine import build_insights
 from claude_lens.insights.models import InsightsReport, TrendsReport
 from claude_lens.insights.trends import DEFAULT_WEEKS, trends
-from claude_lens.models import ImportStats, Report
+from claude_lens.models import ImportStats, OutcomeReport, Report
+from claude_lens.outcomes import Git, refresh_outcomes
 from claude_lens.pricing import Pricing, load_pricing
 from claude_lens.queries import Filters, LoopReport, QueryError
 from claude_lens.report import shorten_home
@@ -60,6 +61,8 @@ class Summary(BaseModel):
     cache: CacheDoctorReport
     loops: LoopReport
     projects: list[str]
+    # Git outcome of the sessions in range, by main model (commits: a rough proxy).
+    outcomes: OutcomeReport
 
 
 def create_dashboard(
@@ -105,6 +108,7 @@ def create_dashboard(
                 cache=_short_cache_paths(cache),
                 loops=_short_loop_paths(loops),
                 projects=sorted(row.key for row in all_projects.rows),
+                outcomes=queries.outcome_report(store, pricing, "model", selected),
             )
 
     @app.get("/api/insights")
@@ -157,7 +161,12 @@ def create_dashboard(
                 detail = queries.session(store, pricing, session_id)
             except QueryError as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return detail.model_copy(update={"project": shorten_home(detail.project)})
+        outcome = detail.outcome
+        if outcome is not None:
+            outcome = outcome.model_copy(update={"repo": shorten_home(outcome.repo)})
+        return detail.model_copy(
+            update={"project": shorten_home(detail.project), "outcome": outcome}
+        )
 
     @app.post("/api/import", dependencies=[Depends(require_action_header)])
     def refresh() -> ImportStats:
@@ -165,7 +174,10 @@ def create_dashboard(
         if not root.is_dir():
             return ImportStats()
         with open_store() as store:
-            return import_transcripts(store, root)
+            stats = import_transcripts(store, root)
+            if settings.git:
+                refresh_outcomes(store, Git(timeout=settings.git_timeout))
+            return stats
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
