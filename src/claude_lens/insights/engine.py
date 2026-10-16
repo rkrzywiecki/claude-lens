@@ -12,7 +12,7 @@ from claude_lens.insights.models import Insight, InsightsReport, Mix, Profile
 from claude_lens.insights.practices import practices
 from claude_lens.insights.rules import RULES, RuleContext
 from claude_lens.insights.stats import SessionStats, build_session_stats
-from claude_lens.models import RequestRecord
+from claude_lens.models import RequestRecord, SessionMeta
 from claude_lens.pricing import Pricing, normalize_model
 from claude_lens.queries import Filters
 from claude_lens.store import Store
@@ -20,29 +20,44 @@ from claude_lens.store import Store
 _SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2, "info": 3}
 
 
-def build_insights(
-    store: Store, pricing: Pricing, filters: Filters, check_files: bool = True
-) -> InsightsReport:
+def load_context(
+    store: Store,
+    pricing: Pricing,
+    filters: Filters,
+    check_files: bool = True,
+    metas: dict[str, SessionMeta] | None = None,
+) -> RuleContext:
+    """Records, tool calls and per-session statistics of one range: what the rules look at."""
     records = list(store.requests(filters.since, filters.until, filters.project))
     calls = list(store.tool_calls(filters.since, filters.until, project=filters.project))
     loops = detect_loops(calls)
-    sessions = build_session_stats(records, calls, store.session_meta(), loops, pricing)
-    total = sum(s.cost for s in sessions)
-    ctx = RuleContext(
+    metas = store.session_meta() if metas is None else metas
+    sessions = build_session_stats(records, calls, metas, loops, pricing)
+    return RuleContext(
         sessions=sessions,
         records=records,
         cache=diagnose(records, pricing),
         pricing=pricing,
-        total_cost=total,
+        total_cost=sum(s.cost for s in sessions),
         check_files=check_files,
     )
+
+
+def build_insights(
+    store: Store, pricing: Pricing, filters: Filters, check_files: bool = True
+) -> InsightsReport:
+    ctx = load_context(store, pricing, filters, check_files)
     found: list[Insight] = [i for rule in RULES for i in rule(ctx)]
     found.sort(key=lambda i: (_SEVERITY_ORDER[i.severity], -(i.savings_usd or 0.0), i.id))
     return InsightsReport(
-        profile=_profile(records, sessions, pricing, filters.since, filters.until),
+        profile=build_profile(ctx, filters.since, filters.until),
         insights=found,
         practices=practices(ctx),
     )
+
+
+def build_profile(ctx: RuleContext, since: datetime | None, until: datetime | None) -> Profile:
+    return _profile(ctx.records, ctx.sessions, ctx.pricing, since, until)
 
 
 def _profile(

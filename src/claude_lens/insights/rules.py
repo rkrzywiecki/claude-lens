@@ -134,8 +134,28 @@ def insight(
     )
 
 
-def _claude_code(ctx: RuleContext) -> list[SessionStats]:
+def claude_code_sessions(ctx: RuleContext) -> list[SessionStats]:
     return [s for s in ctx.sessions if s.source == "claude_code"]
+
+
+def is_long_session(s: SessionStats) -> bool:
+    return s.human_prompts >= KITCHEN_SINK_PROMPTS
+
+
+def is_kitchen_sink(s: SessionStats) -> bool:
+    """A long session that grew past the peak threshold without a context reset."""
+    return is_long_session(s) and s.peak_prompt_tokens >= KITCHEN_SINK_PEAK_TOKENS and s.resets == 0
+
+
+def is_large_change(s: SessionStats) -> bool:
+    return len(s.edited_files) >= PLAN_MODE_MIN_FILES
+
+
+def has_rework(s: SessionStats) -> bool:
+    """File churn, an error streak, or 3+ interruptions."""
+    interruptions = s.meta.interruptions if s.meta else 0
+    rework = any(f.kind in ("error_streak", "file_churn") for f in s.loops)
+    return interruptions >= STRUGGLE_INTERRUPTIONS or rework
 
 
 def _api(ctx: RuleContext) -> list[RequestRecord]:
@@ -154,7 +174,7 @@ def big_model_light_sessions(ctx: RuleContext) -> list[Insight]:
     """Sessions on Opus or Fable that only read, answered and ran commands."""
     picked = [
         s
-        for s in _claude_code(ctx)
+        for s in claude_code_sessions(ctx)
         if s.is_light
         and s.main_requests >= LIGHT_SESSION_MIN_REQUESTS
         and s.big_model_main_cost >= MIN_SESSION_COST
@@ -196,7 +216,7 @@ def big_model_light_sessions(ctx: RuleContext) -> list[Insight]:
 
 def big_model_subagents(ctx: RuleContext) -> list[Insight]:
     """Subagents that read and searched on the largest models."""
-    picked = [s for s in _claude_code(ctx) if s.big_model_subagent_cost >= MIN_SESSION_COST]
+    picked = [s for s in claude_code_sessions(ctx) if s.big_model_subagent_cost >= MIN_SESSION_COST]
     if not picked:
         return []
     ids = {s.session_id for s in picked}
@@ -237,7 +257,7 @@ def big_model_subagents(ctx: RuleContext) -> list[Insight]:
 def high_effort_light_work(ctx: RuleContext) -> list[Insight]:
     picked = []
     thinking_cost = 0.0
-    for s in _claude_code(ctx):
+    for s in claude_code_sessions(ctx):
         high = sum(n for e, n in s.efforts.items() if e in HIGH_EFFORTS)
         share = s.thinking_share
         if (
@@ -281,7 +301,7 @@ def high_effort_light_work(ctx: RuleContext) -> list[Insight]:
 def low_effort_struggle(ctx: RuleContext) -> list[Insight]:
     picked = [
         s
-        for s in _claude_code(ctx)
+        for s in claude_code_sessions(ctx)
         if s.efforts
         and s.efforts.most_common(1)[0][0] == "low"
         and (any(f.kind in ("error_streak", "file_churn") for f in s.loops))
@@ -316,16 +336,10 @@ def low_effort_struggle(ctx: RuleContext) -> list[Insight]:
 
 
 def kitchen_sink_sessions(ctx: RuleContext) -> list[Insight]:
-    picked = [
-        s
-        for s in _claude_code(ctx)
-        if s.human_prompts >= KITCHEN_SINK_PROMPTS
-        and s.peak_prompt_tokens >= KITCHEN_SINK_PEAK_TOKENS
-        and s.resets == 0
-    ]
+    picked = [s for s in claude_code_sessions(ctx) if is_kitchen_sink(s)]
     if not picked:
         return []
-    carried = sum(_context_carry_cost(s.requests, ctx.pricing) for s in picked)
+    carried = sum(context_carry_cost(s.requests, ctx.pricing) for s in picked)
     return [
         insight(
             ctx,
@@ -356,7 +370,7 @@ def kitchen_sink_sessions(ctx: RuleContext) -> list[Insight]:
 def near_context_limit(ctx: RuleContext) -> list[Insight]:
     picked = [
         s
-        for s in _claude_code(ctx)
+        for s in claude_code_sessions(ctx)
         if s.peak_context_share is not None and s.peak_context_share >= NEAR_LIMIT_SHARE
     ]
     if not picked:
@@ -390,7 +404,7 @@ def near_context_limit(ctx: RuleContext) -> list[Insight]:
 def exploration_without_subagents(ctx: RuleContext) -> list[Insight]:
     picked = [
         s
-        for s in _claude_code(ctx)
+        for s in claude_code_sessions(ctx)
         if s.main_reads >= EXPLORATION_MIN_READS and not s.uses_subagents
     ]
     if not picked:
@@ -420,11 +434,7 @@ def exploration_without_subagents(ctx: RuleContext) -> list[Insight]:
 
 
 def large_changes_without_plan(ctx: RuleContext) -> list[Insight]:
-    picked = [
-        s
-        for s in _claude_code(ctx)
-        if len(s.edited_files) >= PLAN_MODE_MIN_FILES and not s.used_plan_mode
-    ]
+    picked = [s for s in claude_code_sessions(ctx) if is_large_change(s) and not s.used_plan_mode]
     if not picked:
         return []
     return [
@@ -451,12 +461,7 @@ def large_changes_without_plan(ctx: RuleContext) -> list[Insight]:
 
 
 def struggling_sessions(ctx: RuleContext) -> list[Insight]:
-    picked = []
-    for s in _claude_code(ctx):
-        interruptions = s.meta.interruptions if s.meta else 0
-        rework = [f for f in s.loops if f.kind in ("error_streak", "file_churn")]
-        if interruptions >= STRUGGLE_INTERRUPTIONS or rework:
-            picked.append(s)
+    picked = [s for s in claude_code_sessions(ctx) if has_rework(s)]
     if not picked:
         return []
     churn = sum(1 for s in picked for f in s.loops if f.kind == "file_churn")
@@ -486,11 +491,11 @@ def struggling_sessions(ctx: RuleContext) -> list[Insight]:
 
 
 def tool_denials(ctx: RuleContext) -> list[Insight]:
-    picked = [s for s in _claude_code(ctx) if s.meta and s.meta.tool_denials]
+    picked = [s for s in claude_code_sessions(ctx) if s.meta and s.meta.tool_denials]
     denials = sum(s.meta.tool_denials for s in picked if s.meta)
     manual = [
         s
-        for s in _claude_code(ctx)
+        for s in claude_code_sessions(ctx)
         if s.meta and s.meta.permission_modes and set(s.meta.permission_modes) <= {"default"}
     ]
     if denials < 3 and len(manual) < 3:
@@ -522,7 +527,7 @@ def claude_md(ctx: RuleContext) -> list[Insight]:
     if not ctx.check_files:
         return []
     by_project: dict[str, list[SessionStats]] = {}
-    for s in _claude_code(ctx):
+    for s in claude_code_sessions(ctx):
         by_project.setdefault(s.project, []).append(s)
     missing: list[str] = []
     long: list[str] = []
@@ -863,7 +868,7 @@ def _thinking_cost(records: list[RequestRecord], pricing: Pricing) -> float:
     return total
 
 
-def _context_carry_cost(records: list[RequestRecord], pricing: Pricing) -> float:
+def context_carry_cost(records: list[RequestRecord], pricing: Pricing) -> float:
     """What the main conversation paid for prompt tokens above the baseline size."""
     total = 0.0
     for r in records:
