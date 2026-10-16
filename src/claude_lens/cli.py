@@ -435,3 +435,21 @@ def dashboard(
     shown = f"[{host}]" if ":" in host else host
     err_console.print(f"claude-lens dashboard on http://{shown}:{port}, reading {db_path}")
     uvicorn.run(app_, host=host, port=port, log_level=settings.log_level.lower())
+
+
+@app.command()
+def statusline() -> None:
+    """Print one status line for Claude Code (reads its JSON on stdin)."""
+    from claude_lens.live.statusline import main as run
+
+    raise typer.Exit(run())
+
+
+@app.command()
+def hook(
+    event: Annotated[str, typer.Argument(help="Claude Code hook event: UserPromptSubmit.")],
+) -> None:
+    """Claude Code hook: nudge towards /clear or /compact; never blocks a prompt."""
+    from claude_lens.live.nudges import main as run
+
+    raise typer.Exit(run(event))

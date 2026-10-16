@@ -30,7 +30,7 @@ dependencies = [
 ]
 
 [project.scripts]
-claude-lens = "claude_lens.cli:app"
+claude-lens = "claude_lens.entry:main"
 
 [build-system]
 requires = ["uv_build>=0.12.10,<0.13.0"]
