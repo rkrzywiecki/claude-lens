@@ -31,6 +31,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
+from claude_lens.fingerprint import canonical, normalize_message
+
 DEFAULT_PROJECT = "(proxy)"
 DEFAULT_CAPACITY = 4096
 
@@ -99,10 +101,10 @@ def prefix_hashes(body: dict[str, Any]) -> list[bytes]:
     messages = body.get("messages")
     if not isinstance(messages, list):
         return []
-    digest = hashlib.sha256(b"system\0" + _canonical(body.get("system"))).digest()
+    digest = hashlib.sha256(b"system\0" + canonical(body.get("system"))).digest()
     hashes: list[bytes] = []
     for message in messages:
-        digest = hashlib.sha256(digest + _canonical(_normalize(message))).digest()
+        digest = hashlib.sha256(digest + canonical(normalize_message(message))).digest()
         hashes.append(digest)
     return hashes
 
@@ -147,24 +149,3 @@ def _texts(value: Any) -> list[str]:
             if isinstance(block, dict) and isinstance(block.get("text"), str)
         ]
     return []
-
-
-def _normalize(message: Any) -> Any:
-    """`"content": "text"` and a single text block are the same message."""
-    if isinstance(message, dict) and isinstance(message.get("content"), str):
-        return {**message, "content": [{"type": "text", "text": message["content"]}]}
-    return message
-
-
-def _canonical(value: Any) -> bytes:
-    return json.dumps(
-        _strip_cache_control(value), sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode()
-
-
-def _strip_cache_control(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {k: _strip_cache_control(v) for k, v in value.items() if k != "cache_control"}
-    if isinstance(value, list):
-        return [_strip_cache_control(v) for v in value]
-    return value

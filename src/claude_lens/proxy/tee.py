@@ -25,6 +25,14 @@ log = structlog.get_logger(__name__)
 Clock = Callable[[], float]
 
 
+class ToolUse(BaseModel):
+    """A tool_use block of the response; its input is hashed by the recorder, never stored."""
+
+    id: str
+    name: str
+    input: Any = None
+
+
 class ResponseObservation(BaseModel):
     """What the proxy learned about one response; no content."""
 
@@ -34,6 +42,7 @@ class ResponseObservation(BaseModel):
     speed: Speed = "standard"
     stop_reason: str | None = None
     tool_names: list[str] = Field(default_factory=list)
+    tool_uses: list[ToolUse] = Field(default_factory=list)
     ttft_ms: float | None = None
     latency_ms: float | None = None
 
@@ -80,6 +89,9 @@ class ResponseTee:
         self._message: dict[str, Any] = {}
         self._usage: dict[str, Any] = {}
         self._tools: list[str] = []
+        # Streamed tool_use blocks by content index: id, name and input JSON fragments.
+        self._tool_blocks: dict[int, tuple[str, str, list[str]]] = {}
+        self._tool_uses: list[ToolUse] = []
         self._ttft: float | None = None
         self._latency: float | None = None
         self._broken = False
@@ -121,6 +133,12 @@ class ResponseTee:
                 usage = body.get("usage")
                 self._usage = usage if isinstance(usage, dict) else {}
                 self._tools = _tool_names(body.get("content"))
+                self._tool_uses = _tool_uses(body.get("content"))
+            else:
+                self._tool_uses = [
+                    ToolUse(id=tool_id, name=name, input=_parse_input(parts))
+                    for _, (tool_id, name, parts) in sorted(self._tool_blocks.items())
+                ]
             return self._observation()
         except Exception as exc:
             self._fail(exc)
@@ -139,6 +157,7 @@ class ResponseTee:
             speed="fast" if self._usage.get("speed") == "fast" else "standard",
             stop_reason=stop_reason if isinstance(stop_reason, str) else None,
             tool_names=self._tools,
+            tool_uses=self._tool_uses,
             ttft_ms=self._ttft,
             latency_ms=self._latency,
         )
@@ -161,6 +180,23 @@ class ResponseTee:
             block = event.get("content_block")
             if isinstance(block, dict):
                 self._tools = _add_tool(self._tools, block)
+                index, tool_id, name = event.get("index"), block.get("id"), block.get("name")
+                if (
+                    block.get("type") == "tool_use"
+                    and isinstance(index, int)
+                    and isinstance(tool_id, str)
+                    and isinstance(name, str)
+                ):
+                    self._tool_blocks[index] = (tool_id, name, [])
+        elif kind == "content_block_delta":
+            delta, index = event.get("delta"), event.get("index")
+            if (
+                isinstance(delta, dict)
+                and delta.get("type") == "input_json_delta"
+                and isinstance(delta.get("partial_json"), str)
+                and index in self._tool_blocks
+            ):
+                self._tool_blocks[index][2].append(delta["partial_json"])
         elif kind == "message_delta":
             delta = event.get("delta")
             if isinstance(delta, dict) and isinstance(delta.get("stop_reason"), str):
@@ -192,3 +228,27 @@ def _tool_names(content: Any) -> list[str]:
             if isinstance(block, dict):
                 names = _add_tool(names, block)
     return names
+
+
+def _tool_uses(content: Any) -> list[ToolUse]:
+    uses: list[ToolUse] = []
+    for block in content if isinstance(content, list) else []:
+        if (
+            isinstance(block, dict)
+            and block.get("type") == "tool_use"
+            and isinstance(block.get("id"), str)
+            and isinstance(block.get("name"), str)
+        ):
+            uses.append(ToolUse(id=block["id"], name=block["name"], input=block.get("input")))
+    return uses
+
+
+def _parse_input(parts: list[str]) -> Any:
+    """Input of a streamed tool_use block; an empty stream means `{}`, broken JSON None."""
+    text = "".join(parts)
+    if not text:
+        return {}
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None

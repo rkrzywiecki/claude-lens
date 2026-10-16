@@ -12,11 +12,13 @@ import json
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from typing import Any
 
 import structlog
 from pydantic import BaseModel, ConfigDict
 
-from claude_lens.models import RequestRecord
+from claude_lens.fingerprint import segment_fingerprints, tool_input_hash, tool_target
+from claude_lens.models import RequestRecord, ToolCall
 from claude_lens.proxy.sessions import SessionTracker
 from claude_lens.proxy.tee import ResponseTee
 from claude_lens.store import Store
@@ -33,6 +35,29 @@ class RecordJob(BaseModel):
     session_header: str | None = None
     project_header: str | None = None
     tee: ResponseTee
+
+
+class RecordBatch(BaseModel):
+    record: RequestRecord
+    tool_calls: list[ToolCall]
+    # (tool_use id, is_error) of the results the request sends back.
+    tool_results: list[tuple[str, bool]]
+
+
+def tool_results(body: dict[str, Any]) -> list[tuple[str, bool]]:
+    """Results in the newest message: those answer the previous response's tool calls."""
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages or not isinstance(messages[-1], dict):
+        return []
+    content = messages[-1].get("content")
+    blocks = content if isinstance(content, list) else []
+    return [
+        (block["tool_use_id"], block.get("is_error") is True)
+        for block in blocks
+        if isinstance(block, dict)
+        and block.get("type") == "tool_result"
+        and isinstance(block.get("tool_use_id"), str)
+    ]
 
 
 class Recorder:
@@ -62,7 +87,7 @@ class Recorder:
         self._executor.submit(self._close_store)
         self._executor.shutdown(wait=True)
 
-    def build(self, job: RecordJob) -> RequestRecord | None:
+    def build(self, job: RecordJob) -> RecordBatch | None:
         observation = job.tee.observation()
         if observation is None or observation.message_id is None or observation.model is None:
             return None
@@ -71,7 +96,20 @@ class Recorder:
         except ValueError:
             body = None
         session = self._tracker.assign(body, job.session_header, job.project_header)
-        return RequestRecord(
+        calls = [
+            ToolCall(
+                tool_use_id=use.id,
+                message_id=observation.message_id,
+                session_id=session.session_id,
+                timestamp=job.started_at,
+                tool_name=use.name,
+                input_hash=tool_input_hash(use.input),
+                target=tool_target(use.input),
+                source="proxy",
+            )
+            for use in observation.tool_uses
+        ]
+        record = RequestRecord(
             message_id=observation.message_id,
             request_id=job.request_id,
             session_id=session.session_id,
@@ -85,17 +123,22 @@ class Recorder:
             source="proxy",
             ttft_ms=observation.ttft_ms,
             latency_ms=observation.latency_ms,
+            segments=segment_fingerprints(body) if isinstance(body, dict) else None,
         )
+        results = tool_results(body) if isinstance(body, dict) else []
+        return RecordBatch(record=record, tool_calls=calls, tool_results=results)
 
     def _write(self, job: RecordJob) -> None:
         try:
-            record = self.build(job)
-            if record is None:
+            batch = self.build(job)
+            if batch is None:
                 self.skipped += 1
                 return
             if self._store is None:
                 self._store = self._open_store()
-            self._store.upsert([record])
+            self._store.upsert([batch.record])
+            self._store.upsert_tool_calls(batch.tool_calls)
+            self._store.mark_tool_results(batch.tool_results)
             self.recorded += 1
         except Exception as exc:  # fail open: never let a record break the worker
             self.errors += 1

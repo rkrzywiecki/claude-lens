@@ -6,7 +6,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent / "examples" / "transcripts"
 
 
-def entry(session: str, cwd: str, n: int, ts: str, model: str, **usage: int) -> dict[str, object]:
+def entry(
+    session: str, cwd: str, n: int, ts: str, model: str, tool: dict[str, object], **usage: int
+) -> dict[str, object]:
     return {
         "type": "assistant",
         "sessionId": session,
@@ -18,7 +20,7 @@ def entry(session: str, cwd: str, n: int, ts: str, model: str, **usage: int) -> 
             "model": model,
             "role": "assistant",
             "stop_reason": "tool_use",
-            "content": [{"type": "tool_use", "id": f"toolu_{n}", "name": "Bash", "input": {}}],
+            "content": [{"type": "tool_use", "id": f"toolu_{session[:4]}_{n:03d}", **tool}],
             "usage": {"input_tokens": 3, **usage},
         },
     }
@@ -40,7 +42,12 @@ def main() -> None:
                 usage = {"cache_read_input_tokens": context, "cache_creation_input_tokens": 1_500}
             else:
                 usage = {"cache_read_input_tokens": 0, "cache_creation_input_tokens": context}
-            lines.append(entry(session, cwd, n, ts, model, output_tokens=800, **usage))
+            if not cached and 4 <= n < 9:
+                # The busy session keeps rewriting one file: a loop `claude-lens loops` reports.
+                tool = {"name": "Edit", "input": {"file_path": f"{cwd}/app.py", "old": str(n)}}
+            else:
+                tool = {"name": "Bash", "input": {"command": f"step {n}"}}
+            lines.append(entry(session, cwd, n, ts, model, tool, output_tokens=800, **usage))
             context += 2_000
         path = ROOT / project_dir / f"{session}.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)

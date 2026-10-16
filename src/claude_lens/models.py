@@ -62,6 +62,23 @@ class RequestRecord(BaseModel):
     # Measured by the proxy only (milliseconds from receiving the request).
     ttft_ms: float | None = None
     latency_ms: float | None = None
+    # Proxy only: content-free hash of each prompt segment (see fingerprint.py).
+    segments: list[str] | None = None
+
+
+class ToolCall(BaseModel):
+    """One tool_use block; only a hash of its input is kept, plus the file it targets."""
+
+    tool_use_id: str
+    message_id: str
+    session_id: str
+    timestamp: datetime
+    tool_name: str
+    input_hash: str
+    target: str | None = None
+    # From the matching tool_result: None until the result is seen.
+    is_error: bool | None = None
+    source: Source = "claude_code"
 
 
 class CostBreakdown(BaseModel):
@@ -124,4 +141,5 @@ class ImportStats(BaseModel):
     files_imported: int = 0
     files_skipped: int = 0
     records: int = 0
+    tool_calls: int = 0
     bad_lines: int = 0

@@ -40,6 +40,8 @@ class LongContextPrice(TierPrice):
 class ModelPrice(TierPrice):
     fast_multiplier: float = Field(default=1.0, ge=1)
     long_context: LongContextPrice | None = None
+    # Not a price, but per-model like one: used to show how full the context got.
+    context_window: int | None = Field(default=None, gt=0)
 
     def tier(self, prompt_tokens: int) -> TierPrice:
         if self.long_context and prompt_tokens > self.long_context.threshold_tokens:
@@ -53,6 +55,10 @@ class Pricing(BaseModel):
     cache_write_5m_multiplier: float = Field(default=1.25, ge=0)
     cache_write_1h_multiplier: float = Field(default=2.0, ge=0)
     models: dict[str, ModelPrice]
+
+    def context_window(self, model: str) -> int | None:
+        price = self.price_for(model)
+        return price.context_window if price else None
 
     def price_for(self, model: str) -> ModelPrice | None:
         return self.models.get(model) or self.models.get(normalize_model(model))

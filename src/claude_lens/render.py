@@ -1,11 +1,17 @@
-"""Terminal output (rich) for import and report."""
+"""Terminal output (rich) for the CLI commands."""
 
 from __future__ import annotations
+
+from datetime import datetime
 
 from rich.console import Console
 from rich.table import Table
 
+from claude_lens.analysis.cache import CacheDoctorReport
+from claude_lens.analysis.session import SessionDetail
 from claude_lens.models import ImportStats, Report, ReportRow
+from claude_lens.queries import LoopReport
+from claude_lens.report import shorten_home
 
 _GROUP_TITLES = {"day": "Day", "project": "Project", "model": "Model", "session": "Session"}
 
@@ -83,3 +89,142 @@ def tokens(n: int) -> str:
         if n >= limit:
             return f"{n / limit:.1f}{suffix}"
     return str(n)
+
+
+def _local(value: datetime, fmt: str = "%Y-%m-%d %H:%M") -> str:
+    return value.astimezone().strftime(fmt)
+
+
+def _short(session_id: str) -> str:
+    return session_id[:8]
+
+
+_CAUSE_LABELS = {
+    "prefix_changed": "prefix changed",
+    "ttl_expired": "TTL expired",
+    "unexplained": "unexplained",
+    "context_reset": "context reset",
+}
+
+
+def render_cache_doctor(console: Console, report: CacheDoctorReport) -> None:
+    if not report.sessions:
+        console.print("No requests in the selected range. Run `claude-lens import` first?")
+        return
+    table = Table(title="Prompt-cache misses by session", title_justify="left")
+    table.add_column("Session")
+    table.add_column("Started")
+    table.add_column("Project", overflow="fold")
+    table.add_column("Requests", justify="right")
+    table.add_column("Hit ratio", justify="right")
+    table.add_column("Misses")
+    table.add_column("Lost", justify="right")
+    table.add_column("Avoidable", justify="right", style="bold")
+    for s in report.sessions:
+        ratio = "-" if s.hit_ratio is None else f"{s.hit_ratio:.0%}"
+        causes = ", ".join(f"{n} {_CAUSE_LABELS[c]}" for c, n in s.counts.items() if n)
+        table.add_row(
+            _short(s.session_id),
+            _local(s.started),
+            shorten_home(s.project),
+            f"{s.requests:,}",
+            ratio,
+            causes or "-",
+            money(s.penalty),
+            money(s.avoidable_penalty),
+        )
+    console.print(table)
+    console.print(
+        f"Listed sessions: {money(report.penalty)} lost to cache misses, "
+        f"[bold]{money(report.avoidable_penalty)} avoidable[/bold]."
+    )
+    misses = [m for s in report.sessions for m in s.misses if m.cause != "context_reset"]
+    if misses:
+        worst = sorted(misses, key=lambda m: -m.penalty)[:5]
+        console.print("\nCostliest misses:")
+        for m in worst:
+            console.print(
+                f"  {_local(m.timestamp)}  {m.model}  {tokens(m.lost_tokens)} tokens re-sent, "
+                f"{money(m.penalty)}: {_CAUSE_LABELS[m.cause]} ({m.detail})"
+                + ("" if m.avoidable else " [dim]unavoidable[/dim]")
+            )
+    if report.advice:
+        console.print("\nAdvice:")
+        for line in report.advice:
+            console.print(f"  - {line}")
+    elif not misses:
+        console.print("No avoidable cache misses found.")
+
+
+_LOOP_LABELS = {
+    "repeated_call": "same call repeated",
+    "error_streak": "errors in a row",
+    "file_churn": "file edited repeatedly",
+}
+
+
+def render_loops(console: Console, report: LoopReport) -> None:
+    if not report.findings:
+        console.print("No loops found.")
+        return
+    table = Table(title="Possible agent loops", title_justify="left")
+    table.add_column("Session")
+    table.add_column("Pattern")
+    table.add_column("Tools")
+    table.add_column("Count", justify="right", style="bold")
+    table.add_column("When")
+    table.add_column("Target", overflow="fold")
+    for f in report.findings:
+        project = report.projects.get(f.session_id)
+        table.add_row(
+            _short(f.session_id) + (f"  {shorten_home(project)}" if project else ""),
+            _LOOP_LABELS[f.kind],
+            ", ".join(f.tool_names),
+            str(f.count),
+            f"{_local(f.first)} - {_local(f.last, '%H:%M')}",
+            shorten_home(f.target) if f.target else "",
+        )
+    console.print(table)
+
+
+def render_session(console: Console, detail: SessionDetail) -> None:
+    ctx = detail.context
+    peak_share = f" ({ctx.peak_share:.0%} of the window)" if ctx.peak_share is not None else ""
+    console.print(
+        f"[bold]Session {detail.session_id}[/bold]  {shorten_home(detail.project)}\n"
+        f"{_local(detail.started)} - {_local(detail.ended)}, {len(detail.timeline)} requests, "
+        f"{money(detail.cost)}, cache hit ratio "
+        + ("-" if detail.cache.hit_ratio is None else f"{detail.cache.hit_ratio:.0%}")
+        + f"\nContext: peak {tokens(ctx.peak_prompt_tokens)} tokens{peak_share}, "
+        f"last {tokens(ctx.final_prompt_tokens)}, {ctx.average_growth:+,.0f} tokens per request, "
+        f"{ctx.resets} resets"
+    )
+    table = Table(title_justify="left")
+    table.add_column("Time")
+    table.add_column("Model")
+    table.add_column("Prompt", justify="right")
+    table.add_column("Cache read", justify="right")
+    table.add_column("Cache write", justify="right")
+    table.add_column("Output", justify="right")
+    table.add_column("Cost", justify="right")
+    table.add_column("Tools / notes", overflow="fold")
+    for e in detail.timeline:
+        notes = ", ".join(e.tool_names)
+        if e.is_sidechain:
+            notes = f"[dim]subagent[/dim] {notes}".strip()
+        if e.miss_cause:
+            style = "dim" if e.miss_cause == "context_reset" else "red"
+            notes = f"[{style}]cache miss: {_CAUSE_LABELS[e.miss_cause]}[/{style}] {notes}".strip()
+        table.add_row(
+            _local(e.timestamp, "%H:%M:%S"),
+            e.model,
+            tokens(e.usage.prompt_tokens),
+            tokens(e.usage.cache_read_tokens),
+            tokens(e.usage.cache_write_tokens),
+            tokens(e.usage.output_tokens),
+            money(e.cost.total) if e.cost else "?",
+            notes,
+        )
+    console.print(table)
+    if detail.loops:
+        render_loops(console, LoopReport(findings=detail.loops, projects={}))
