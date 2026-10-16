@@ -35,3 +35,6 @@ Rules:
 Claude Code also makes API calls that are not written to the transcript, such as session-title
 generation on a small model. Each session's `cost-state` record holds Claude Code's own total; on
 real data, claude-lens totals came out about 4% lower, and many sessions matched to the cent.
+Run the [proxy](proxy.md) to record those calls too. A response seen by both the importer and the
+proxy is stored once (keyed by message id); the importer's session and project win, and the
+proxy's latency is kept.

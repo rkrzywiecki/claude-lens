@@ -1,8 +1,9 @@
 # claude-lens
 
 `claude-lens` shows what Claude actually costs you, and why. It reads Claude Code session
-transcripts, stores each API response in a local SQLite database, and reports API-equivalent
-cost, token usage and the **prompt-cache hit ratio** by day, project, model or session.
+transcripts and, optionally, records live API traffic through a pass-through proxy. Each API
+response is stored in a local SQLite database, and reports show API-equivalent cost, token usage
+and the **prompt-cache hit ratio** by day, project, model or session.
 
 It is the observability companion to [claude-guard](https://github.com/rkrzywiecki/claude-guard).
 claude-guard decides what may pass; claude-lens only watches, never blocks, and never changes
@@ -15,18 +16,21 @@ flowchart LR
     S --> R[report.py]
     P[pricing.yaml] --> R
     R --> C["claude-lens report<br/>(table or --json)"]
-    X["API proxy (planned, M2)"] -.-> S
+    CL["Claude Code / SDK<br/>ANTHROPIC_BASE_URL"] --> X["claude-lens serve :8788<br/>(proxy/app.py)"]
+    X <-->|"unchanged"| A[api.anthropic.com]
+    X -->|"SSE tee: usage, TTFT, latency<br/>(background thread)"| S
 ```
 
-**Status:** milestone M1 (transcript importer and reports). The API proxy, cache doctor, loop
-detection and dashboard are planned; see [Roadmap](#roadmap).
+**Status:** milestones M1 (transcript importer and reports) and M2 (API proxy). The cache doctor,
+loop detection and dashboard are planned; see [Roadmap](#roadmap).
 
 ## Requirements
 
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/)
-- Claude Code transcripts on disk (`~/.claude/projects`). No API key is needed: nothing calls the
-  Claude API.
+- Claude Code transcripts on disk (`~/.claude/projects`), the proxy, or both. claude-lens needs
+  no API key of its own: the importer calls no API, and the proxy forwards the client's
+  credentials (`ANTHROPIC_API_KEY` or a Claude Code login) unchanged.
 
 ## Installation
 
@@ -67,6 +71,45 @@ Columns:
 The **Total** row always covers every request in the selected range, also when `--top` hides some
 rows.
 
+## API proxy
+
+Transcripts miss some API calls (Claude Code's side requests, such as session titles) and carry no
+timing. The proxy sees every call: run it and point `ANTHROPIC_BASE_URL` at it.
+
+```bash
+uv run claude-lens serve
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8788
+claude
+```
+
+Every `/v1/*` request is forwarded to `https://api.anthropic.com` unchanged (headers, body,
+streaming, errors). For each `POST /v1/messages` response the proxy records usage, model, stop
+reason, tool names, time to the first content block (`ttft_ms`) and total latency
+(`latency_ms`), in the same database the importer uses, so `report` covers both sources and
+counts a response seen by both once. Recording runs on a background thread and fails open: a
+broken database never affects a response. No prompt content is stored.
+
+Sessions come from the `x-lens-session` header, from the session id Claude Code sends in request
+`metadata` (the same id as its transcripts), or from message-prefix continuation; the project from
+the `x-lens-project` header or the working directory in Claude Code's system context.
+
+With [claude-guard](https://github.com/rkrzywiecki/claude-guard), chain the guard first:
+
+```
+client -> claude-guard :8787 -> claude-lens :8788 -> api.anthropic.com
+```
+
+```bash
+uv run claude-lens serve                                         # in claude-lens
+GUARD_UPSTREAM_URL=http://127.0.0.1:8788 uv run claude-guard serve   # in claude-guard
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
+claude
+```
+
+The proxy listens on `127.0.0.1` only, unless `--allow-non-loopback` is given (plain HTTP: put TLS
+in front). `curl http://127.0.0.1:8788/healthz` shows how many records were written. Details:
+[docs/proxy.md](docs/proxy.md).
+
 ## Configuration
 
 Settings come from environment variables (or `.env`):
@@ -77,6 +120,11 @@ Settings come from environment variables (or `.env`):
 | `LENS_TRANSCRIPTS_DIR` | `~/.claude/projects` | Root of the Claude Code transcripts |
 | `LENS_PRICING_PATH` | *(bundled table)* | Custom `pricing.yaml` |
 | `LENS_LOG_LEVEL` | `WARNING` | Log level of the JSON logs on stderr |
+| `LENS_UPSTREAM_URL` | `https://api.anthropic.com` | Proxy: where requests are forwarded |
+| `LENS_UPSTREAM_TIMEOUT` | `600` | Proxy: upstream timeout in seconds |
+| `LENS_HOST` | `127.0.0.1` | Proxy: listen address |
+| `LENS_PORT` | `8788` | Proxy: listen port |
+| `LENS_ALLOW_NON_LOOPBACK` | `false` | Proxy: allow a non-loopback listen address |
 
 Prices live in [`src/claude_lens/data/pricing.yaml`](src/claude_lens/data/pricing.yaml) (USD per
 million tokens). To change or add a model, copy the file, edit it and point `LENS_PRICING_PATH` at
@@ -132,20 +180,25 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy src
   partner-platform pricing are not modeled, nor are server-tool fees (web search).
 - **Transcripts do not record every API call.** Claude Code makes side requests (for example
   session titles) that never reach the transcript. On real data, totals came out about 4% below
-  the cost Claude Code reports itself; most sessions match exactly. The planned proxy will see
-  every request.
+  the cost Claude Code reports itself; most sessions match exactly. The proxy sees every request,
+  but only while it runs.
+- **Proxy sessions are partly heuristic.** Without `x-lens-session` or a session id in request
+  `metadata`, requests are grouped by message-prefix continuation, kept in memory only: a restart,
+  compaction or rewritten history starts a new session. Batch results are forwarded but not
+  recorded. The proxy adds one local hop to every request.
 - **The transcript format is not a stable API.** The importer is tolerant (unknown records are
   skipped, malformed lines counted), but a format change can make fields disappear. Tests use
   record shapes copied from Claude Code 2.1.x transcripts.
-- Prompt contents are never stored: only ids, timestamps, model, token counts and tool names.
+- Prompt contents are never stored: only ids, timestamps, model, token counts, tool names and
+  timings.
 - Prices in the bundled table were checked on 2026-10-16 and will go stale; check them against the
   [pricing page](https://platform.claude.com/docs/en/about-claude/pricing).
 
 ## Roadmap
 
 1. **M1 (done):** transcript importer, SQLite store, `report`.
-2. **M2:** pass-through API proxy (`ANTHROPIC_BASE_URL`) with an SSE tee: usage, latency (TTFT,
-   total), every request including side calls.
+2. **M2 (done):** pass-through API proxy (`ANTHROPIC_BASE_URL`) with an SSE tee: usage, latency
+   (TTFT, total), every request including side calls.
 3. **M3:** `cache-doctor <session>` (which prefix segment changed between turns: tools, system,
    messages), loop detection (same tool and input repeated, error streaks), context growth.
 4. **M4:** local web dashboard.
