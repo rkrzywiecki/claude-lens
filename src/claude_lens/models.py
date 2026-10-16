@@ -44,6 +44,19 @@ class Usage(BaseModel):
         )
 
 
+class RequestFeatures(BaseModel):
+    """Request settings the proxy saw; none of them carries prompt content."""
+
+    stream: bool = False
+    max_tokens: int | None = None
+    tool_count: int = 0
+    # Whether any block, tool or the request itself carries cache_control.
+    cache_control: bool = False
+    thinking: str | None = None
+    # Text characters in the system prompt (a size, not the text).
+    system_chars: int = 0
+
+
 class RequestRecord(BaseModel):
     """One model response (one API request), whatever source it came from."""
 
@@ -64,6 +77,34 @@ class RequestRecord(BaseModel):
     latency_ms: float | None = None
     # Proxy only: content-free hash of each prompt segment (see fingerprint.py).
     segments: list[str] | None = None
+    # Effort the request ran at (low ... max), when known.
+    effort: str | None = None
+    # Part of output_tokens spent on thinking, when the API reports it.
+    thinking_tokens: int | None = None
+    # Subagent that made the request (Claude Code transcripts).
+    agent_id: str | None = None
+    # Proxy only: request settings relevant to cost (no content).
+    features: RequestFeatures | None = None
+
+
+class SessionMeta(BaseModel):
+    """What one transcript file says about how a session was run (Claude Code only).
+
+    Kept per file and summed when read, so re-importing a file never double-counts.
+    """
+
+    session_id: str
+    source_file: str
+    entrypoint: str | None = None
+    version: str | None = None
+    permission_modes: list[str] = Field(default_factory=list)
+    human_prompts: int = 0
+    interruptions: int = 0
+    tool_denials: int = 0
+    api_errors: int = 0
+    skills: list[str] = Field(default_factory=list)
+    agents: list[str] = Field(default_factory=list)
+    active_ms: int = 0
 
 
 class ToolCall(BaseModel):

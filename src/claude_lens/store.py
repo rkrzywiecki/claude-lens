@@ -10,9 +10,9 @@ from pathlib import Path
 from types import TracebackType
 from typing import Self
 
-from claude_lens.models import RequestRecord, ToolCall, Usage
+from claude_lens.models import RequestFeatures, RequestRecord, SessionMeta, ToolCall, Usage
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _TOOL_CALLS = """
 CREATE TABLE IF NOT EXISTS tool_calls (
@@ -27,6 +27,24 @@ CREATE TABLE IF NOT EXISTS tool_calls (
     source       TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS tool_calls_session ON tool_calls (session_id, ts);
+"""
+
+_SESSION_META = """
+CREATE TABLE IF NOT EXISTS session_meta (
+    session_id        TEXT NOT NULL,
+    source_file       TEXT NOT NULL,
+    entrypoint        TEXT,
+    version           TEXT,
+    permission_modes  TEXT NOT NULL,
+    human_prompts     INTEGER NOT NULL,
+    interruptions     INTEGER NOT NULL,
+    tool_denials      INTEGER NOT NULL,
+    api_errors        INTEGER NOT NULL,
+    skills            TEXT NOT NULL,
+    agents            TEXT NOT NULL,
+    active_ms         INTEGER NOT NULL,
+    PRIMARY KEY (session_id, source_file)
+);
 """
 
 _SCHEMA = (
@@ -50,7 +68,11 @@ CREATE TABLE IF NOT EXISTS requests (
     source          TEXT NOT NULL,
     ttft_ms         REAL,
     latency_ms      REAL,
-    segments        TEXT
+    segments        TEXT,
+    effort          TEXT,
+    thinking_tokens INTEGER,
+    agent_id        TEXT,
+    features        TEXT
 );
 CREATE INDEX IF NOT EXISTS requests_ts ON requests (ts);
 CREATE INDEX IF NOT EXISTS requests_session ON requests (session_id);
@@ -61,6 +83,7 @@ CREATE TABLE IF NOT EXISTS imported_files (
 );
 """
     + _TOOL_CALLS
+    + _SESSION_META
 )
 
 # _MIGRATIONS[n - 1] upgrades a database from version n to n + 1.
@@ -69,12 +92,23 @@ _MIGRATIONS = (
     # v3 adds tool calls: forget imported files so the next import reads them again.
     # Fixed DDL only, no values.
     "ALTER TABLE requests ADD COLUMN segments TEXT; DELETE FROM imported_files;" + _TOOL_CALLS,  # noqa: S608
+    # v4 adds effort, thinking and session metadata: read every transcript again.
+    "\n".join(
+        [
+            "ALTER TABLE requests ADD COLUMN effort TEXT;",
+            "ALTER TABLE requests ADD COLUMN thinking_tokens INTEGER;",
+            "ALTER TABLE requests ADD COLUMN agent_id TEXT;",
+            "ALTER TABLE requests ADD COLUMN features TEXT;",
+            "DELETE FROM imported_files;",
+            _SESSION_META,
+        ]
+    ),
 )
 
 _COLUMNS = (
     "message_id, request_id, session_id, project, model, ts, input_tokens, output_tokens, "
     "cache_read, cache_write_5m, cache_write_1h, speed, stop_reason, tool_names, is_sidechain, "
-    "source, ttft_ms, latency_ms, segments"
+    "source, ttft_ms, latency_ms, segments, effort, thinking_tokens, agent_id, features"
 )
 
 # The same response can arrive from both sources. Usage and tool names come from the newest
@@ -83,7 +117,7 @@ _COLUMNS = (
 _KEEP_IMPORTED = "requests.source = 'claude_code' AND excluded.source = 'proxy'"
 # Built only from the constants above; values are bound as parameters.
 _UPSERT = f"""
-INSERT INTO requests ({_COLUMNS}) VALUES ({", ".join("?" * 19)})
+INSERT INTO requests ({_COLUMNS}) VALUES ({", ".join("?" * 23)})
 ON CONFLICT (message_id) DO UPDATE SET
     request_id = COALESCE(excluded.request_id, requests.request_id),
     session_id = CASE WHEN {_KEEP_IMPORTED} THEN requests.session_id ELSE excluded.session_id END,
@@ -103,7 +137,11 @@ ON CONFLICT (message_id) DO UPDATE SET
     tool_names = excluded.tool_names,
     ttft_ms = COALESCE(excluded.ttft_ms, requests.ttft_ms),
     latency_ms = COALESCE(excluded.latency_ms, requests.latency_ms),
-    segments = COALESCE(excluded.segments, requests.segments)
+    segments = COALESCE(excluded.segments, requests.segments),
+    effort = COALESCE(excluded.effort, requests.effort),
+    thinking_tokens = COALESCE(excluded.thinking_tokens, requests.thinking_tokens),
+    agent_id = COALESCE(excluded.agent_id, requests.agent_id),
+    features = COALESCE(excluded.features, requests.features)
 """  # noqa: S608
 
 _TOOL_COLUMNS = (
@@ -212,6 +250,10 @@ class Store:
                 r.ttft_ms,
                 r.latency_ms,
                 json.dumps(r.segments) if r.segments is not None else None,
+                r.effort,
+                r.thinking_tokens,
+                r.agent_id,
+                r.features.model_dump_json() if r.features is not None else None,
             )
             for r in records
         ]
@@ -254,6 +296,12 @@ class Store:
                 ttft_ms=row[16],
                 latency_ms=row[17],
                 segments=json.loads(row[18]) if row[18] is not None else None,
+                effort=row[19],
+                thinking_tokens=row[20],
+                agent_id=row[21],
+                features=(
+                    RequestFeatures.model_validate_json(row[22]) if row[22] is not None else None
+                ),
             )
 
     def count(self) -> int:
@@ -268,6 +316,54 @@ class Store:
             (len(prefix), prefix),
         )
         return [row[0] for row in rows]
+
+    # -- session metadata -------------------------------------------------------
+
+    def upsert_session_meta(self, metas: Iterable[SessionMeta]) -> None:
+        rows = [
+            (
+                m.session_id,
+                m.source_file,
+                m.entrypoint,
+                m.version,
+                json.dumps(m.permission_modes),
+                m.human_prompts,
+                m.interruptions,
+                m.tool_denials,
+                m.api_errors,
+                json.dumps(m.skills),
+                json.dumps(m.agents),
+                m.active_ms,
+            )
+            for m in metas
+        ]
+        with self._conn:
+            self._conn.executemany(
+                f"INSERT OR REPLACE INTO session_meta VALUES ({', '.join('?' * 12)})",  # noqa: S608
+                rows,
+            )
+
+    def session_meta(self) -> dict[str, SessionMeta]:
+        """Metadata per session, summed over the files that mention it."""
+        merged: dict[str, SessionMeta] = {}
+        for row in self._conn.execute("SELECT * FROM session_meta ORDER BY session_id"):
+            meta = SessionMeta(
+                session_id=row[0],
+                source_file=row[1],
+                entrypoint=row[2],
+                version=row[3],
+                permission_modes=json.loads(row[4]),
+                human_prompts=row[5],
+                interruptions=row[6],
+                tool_denials=row[7],
+                api_errors=row[8],
+                skills=json.loads(row[9]),
+                agents=json.loads(row[10]),
+                active_ms=row[11],
+            )
+            current = merged.get(meta.session_id)
+            merged[meta.session_id] = meta if current is None else _merge_meta(current, meta)
+        return merged
 
     # -- tool calls -----------------------------------------------------------
 
@@ -348,3 +444,23 @@ def _filters(
         clauses.append("session_id = ?")
         params.append(session)
     return clauses, params
+
+
+def _merge_meta(a: SessionMeta, b: SessionMeta) -> SessionMeta:
+    def union(x: list[str], y: list[str]) -> list[str]:
+        return x + [v for v in y if v not in x]
+
+    return SessionMeta(
+        session_id=a.session_id,
+        source_file="*",
+        entrypoint=a.entrypoint or b.entrypoint,
+        version=max(filter(None, [a.version, b.version]), default=None),
+        permission_modes=union(a.permission_modes, b.permission_modes),
+        human_prompts=a.human_prompts + b.human_prompts,
+        interruptions=a.interruptions + b.interruptions,
+        tool_denials=a.tool_denials + b.tool_denials,
+        api_errors=a.api_errors + b.api_errors,
+        skills=union(a.skills, b.skills),
+        agents=union(a.agents, b.agents),
+        active_ms=a.active_ms + b.active_ms,
+    )

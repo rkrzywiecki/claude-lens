@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     port: int = 8788
     allow_non_loopback: bool = False
 
+    # LLM coach (`claude-lens insights --coach`).
+    coach_model: str = "claude-opus-5-5"
+    coach_effort: str = "medium"
+    coach_language: str = "English"
+    coach_timeout: float = 120.0
+
     def resolved_db_path(self) -> Path:
         return self.db_path.expanduser()
 

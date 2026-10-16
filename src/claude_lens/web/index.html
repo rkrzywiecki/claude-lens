@@ -18,6 +18,8 @@
   --hover: rgba(11, 11, 11, 0.04);
   --good-text: #006300;
   --critical: #d03b3b;
+  --warning: #fab219;
+  --good: #0ca30c;
   --s1: #2a78d6;
   --s2: #eb6834;
   --s3: #1baf7a;
@@ -38,6 +40,8 @@
     --hover: rgba(255, 255, 255, 0.05);
     --good-text: #0ca30c;
     --critical: #d03b3b;
+    --warning: #fab219;
+    --good: #0ca30c;
     --s1: #3987e5;
     --s2: #d95926;
     --s3: #199e70;
@@ -58,6 +62,8 @@
   --hover: rgba(255, 255, 255, 0.05);
   --good-text: #0ca30c;
   --critical: #d03b3b;
+  --warning: #fab219;
+  --good: #0ca30c;
   --s1: #3987e5;
   --s2: #d95926;
   --s3: #199e70;
@@ -146,6 +152,31 @@ tbody tr.click:hover, tbody tr.click:focus { background: var(--hover); outline: 
 .badge.neutral { color: var(--muted); }
 #session { scroll-margin-top: 16px; }
 #session[hidden] { display: none; }
+.insight { padding: 12px 0; border-bottom: 1px solid var(--grid); }
+.insight:last-child { border-bottom: 0; }
+.insight-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.insight-title { font-weight: 600; }
+.insight-saving { margin-left: auto; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.insight p { margin: 4px 0; color: var(--ink-2); }
+.insight .rec { color: var(--ink); }
+.insight .meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); align-items: center; }
+.chip { font: inherit; font-size: 12px; color: var(--ink-2); background: var(--hover); border: 1px solid var(--border); border-radius: 6px; padding: 1px 6px; cursor: pointer; }
+.chip:hover { color: var(--ink); }
+.sev { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.sev .ic { font-size: 11px; }
+.sev.high .ic, .st.fail .ic { color: var(--critical); }
+.sev.medium .ic, .st.warn .ic { color: var(--warning); }
+.sev.low .ic, .sev.info .ic, .st.na .ic { color: var(--muted); }
+.st.pass .ic { color: var(--good); }
+.st { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
+a { color: var(--s1); }
+h3 { font-size: 14px; margin: 20px 0 8px; font-weight: 600; }
+.coach { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--grid); }
+.coach-row { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+.coach-out { margin-top: 12px; }
+.coach-out h4 { margin: 14px 0 6px; font-size: 14px; }
+.coach-out p, .coach-out li { color: var(--ink); }
+.insight code, .coach-out code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--hover); padding: 1px 4px; border-radius: 4px; }
 .facts { display: flex; flex-wrap: wrap; gap: 4px 24px; color: var(--ink-2); margin: -4px 0 12px; }
 .facts b { color: var(--ink); font-weight: 600; }
 .timeline { max-height: 420px; overflow: auto; }
@@ -160,7 +191,7 @@ tbody tr.click:hover, tbody tr.click:focus { background: var(--hover); outline: 
 <main>
   <header>
     <h1>claude-lens</h1>
-    <span class="sub">API-equivalent cost, prompt cache and agent loops of your Claude usage</span>
+    <span class="sub">Cost, prompt cache, agent loops and recommendations for your Claude usage</span>
   </header>
 
   <div class="controls">
@@ -183,6 +214,28 @@ tbody tr.click:hover, tbody tr.click:focus { background: var(--hover); outline: 
     <div class="card kpi"><div class="label">Cache hit ratio</div><div class="value" id="k-hit">-</div><div class="note">of all prompt tokens</div></div>
     <div class="card kpi"><div class="label">Saved by caching</div><div class="value" id="k-saved">-</div><div class="note">vs. no caching</div></div>
     <div class="card kpi"><div class="label">Avoidable cache loss</div><div class="value" id="k-loss">-</div><div class="note" id="k-loss-note">top sessions</div></div>
+  </section>
+
+  <section class="card" id="insights-card" style="margin-bottom:16px">
+    <div class="card-head">
+      <h2>Recommendations</h2>
+      <span class="muted" id="insights-total"></span>
+    </div>
+    <div id="insights-list"></div>
+    <h3>Best practices</h3>
+    <div class="scroll" id="practices-table"></div>
+    <div class="coach">
+      <div class="coach-row">
+        <button type="button" class="btn" id="coach-btn">Ask Claude for a plan</button>
+        <label class="sub">Language
+          <select id="coach-lang" style="width:auto">
+            <option>English</option><option>Polish</option><option>German</option><option>Spanish</option><option>French</option>
+          </select>
+        </label>
+      </div>
+      <p class="muted" style="font-size:12px;margin:6px 0 0">Sends only aggregated numbers and the findings above (no paths, session ids or prompts) to the Claude API. Costs a few cents. Needs ANTHROPIC_API_KEY or an <code>ant auth login</code> profile where the dashboard runs.</p>
+      <div class="coach-out" id="coach-out" aria-live="polite"></div>
+    </div>
   </section>
 
   <section class="card">
@@ -598,6 +651,119 @@ function renderSummary(data) {
   ], findings, (f) => openSession(f.session_id)) : el("div", { class: "empty", text: "No loops found in this range." }));
 }
 
+const SEVERITY = {
+  high: { icon: "▲", label: "High" },
+  medium: { icon: "◆", label: "Medium" },
+  low: { icon: "●", label: "Low" },
+  info: { icon: "○", label: "Info" },
+};
+const STATUS = {
+  pass: { icon: "✔", label: "Pass", cls: "pass" },
+  warn: { icon: "▲", label: "Warn", cls: "warn" },
+  fail: { icon: "✖", label: "Fail", cls: "fail" },
+  "n/a": { icon: "–", label: "n/a", cls: "na" },
+};
+const SAVINGS_KIND = { reprice: "repriced", estimate: "estimate", upper_bound: "up to" };
+
+function docLink(url) {
+  const a = el("a", { href: url, target: "_blank", rel: "noopener noreferrer", text: "docs" });
+  return a;
+}
+
+function renderInsights(report) {
+  const list = document.getElementById("insights-list");
+  const total = report.insights.reduce((a, i) => a + (i.savings_usd || 0), 0);
+  document.getElementById("insights-total").textContent = report.insights.length
+    ? `${report.insights.length} recommendations` + (total ? ` · estimated savings ${money(total)}` : "")
+    : "";
+  if (!report.insights.length) {
+    list.replaceChildren(el("div", { class: "empty", text: report.profile.requests ? "Nothing in this range crossed a threshold." : "No requests in this range." }));
+  } else {
+    list.replaceChildren(...report.insights.map((i) => {
+      const sev = SEVERITY[i.severity];
+      const head = el("div", { class: "insight-head" },
+        el("span", { class: "sev " + i.severity }, el("span", { class: "ic", text: sev.icon }), document.createTextNode(sev.label)),
+        el("span", { class: "insight-title", text: i.title }));
+      if (i.savings_usd) head.append(el("span", { class: "insight-saving", text: `${SAVINGS_KIND[i.savings_kind] || "estimate"} ${money(i.savings_usd)}` }));
+      const meta = el("div", { class: "meta" }, document.createTextNode(`confidence ${i.confidence}`));
+      if (i.source) meta.append(docLink(i.source));
+      for (const id of i.sessions.slice(0, 5)) {
+        const chip = el("button", { type: "button", class: "chip", text: id.slice(0, 8), title: "Open session" });
+        chip.addEventListener("click", () => openSession(id));
+        meta.append(chip);
+      }
+      if (!i.sessions.length && i.evidence.length) meta.append(document.createTextNode(i.evidence.slice(0, 3).join("; ") + (i.evidence.length > 3 ? " …" : "")));
+      return el("div", { class: "insight" }, head,
+        el("p", {}, ...inlineMd(i.finding)),
+        el("p", { class: "rec" }, ...inlineMd("→ " + i.recommendation)),
+        meta);
+    }));
+  }
+  document.getElementById("practices-table").replaceChildren(table([
+    { label: "Status", value: (p) => { const st = STATUS[p.status]; return el("span", { class: "st " + st.cls }, el("span", { class: "ic", text: st.icon }), document.createTextNode(st.label)); } },
+    { label: "Practice", value: (p) => p.title },
+    { label: "Evidence", value: (p) => p.evidence },
+    { label: "", value: (p) => docLink(p.source) },
+  ], report.practices));
+}
+
+// Minimal Markdown for the coach's answer: headings, lists, paragraphs, **bold**, `code`.
+// Every piece of text goes through textContent; nothing is parsed as HTML.
+function inlineMd(text) {
+  const out = [];
+  const re = /(\*\*[^*]+\*\*|`[^`]+`)/g;
+  let last = 0, m;
+  while ((m = re.exec(text))) {
+    if (m.index > last) out.push(document.createTextNode(text.slice(last, m.index)));
+    const token = m[0];
+    out.push(token.startsWith("**") ? el("strong", { text: token.slice(2, -2) }) : el("code", { text: token.slice(1, -1) }));
+    last = m.index + token.length;
+  }
+  if (last < text.length) out.push(document.createTextNode(text.slice(last)));
+  return out;
+}
+function renderMarkdown(md) {
+  const nodes = [];
+  let list = null, para = [];
+  const flush = () => { if (para.length) { nodes.push(el("p", {}, ...inlineMd(para.join(" ")))); para = []; } };
+  for (const raw of md.split("\n")) {
+    const line = raw.trimEnd();
+    const heading = line.match(/^#{1,6}\s+(.*)$/);
+    const bullet = line.match(/^\s*(?:[-*]|\d+[.)])\s+(.*)$/);
+    if (heading) { flush(); list = null; nodes.push(el("h4", {}, ...inlineMd(heading[1]))); }
+    else if (bullet) {
+      flush();
+      if (!list) { list = el(/^\s*\d/.test(line) ? "ol" : "ul"); nodes.push(list); }
+      list.append(el("li", {}, ...inlineMd(bullet[1])));
+    } else if (!line.trim()) { flush(); list = null; }
+    else { list = null; para.push(line.trim()); }
+  }
+  flush();
+  return nodes;
+}
+
+async function askCoach() {
+  const out = document.getElementById("coach-out");
+  const button = document.getElementById("coach-btn");
+  button.disabled = true;
+  out.replaceChildren(el("p", { class: "muted", text: "Asking Claude… this takes up to a minute." }));
+  const params = new URLSearchParams();
+  if (state.days) params.set("days", state.days);
+  if (state.project) params.set("project", state.project);
+  params.set("lang", document.getElementById("coach-lang").value);
+  try {
+    const res = await fetch("/api/coach?" + params, { method: "POST", headers: { "x-lens-request": "1" } });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.detail || res.statusText);
+    const cost = body.cost != null ? `, ${money(body.cost)}` : "";
+    out.replaceChildren(...renderMarkdown(body.text), el("p", { class: "muted", text: `${body.model}${cost}` }));
+  } catch (err) {
+    out.replaceChildren(el("p", { class: "badge bad", text: "▲ Coach unavailable: " + err.message }));
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function openSession(id) {
   setStatus("Loading session…");
   const res = await fetch("/api/sessions/" + encodeURIComponent(id));
@@ -655,11 +821,13 @@ async function load() {
   if (state.days) params.set("days", state.days);
   if (state.project) params.set("project", state.project);
   try {
-    const res = await fetch("/api/summary?" + params);
+    const [res, ins] = await Promise.all([fetch("/api/summary?" + params), fetch("/api/insights?" + params)]);
     if (!res.ok) throw new Error(res.status + " " + res.statusText);
+    if (!ins.ok) throw new Error(ins.status + " " + ins.statusText);
     state.data = await res.json();
     fillProjects(state.data.projects);
     renderSummary(state.data);
+    renderInsights(await ins.json());
     setStatus("");
   } catch (err) {
     setStatus("Could not load data: " + err.message);
@@ -677,7 +845,7 @@ function fillProjects(projects) {
 
 async function refresh() {
   setStatus("Importing…");
-  const res = await fetch("/api/import", { method: "POST" });
+  const res = await fetch("/api/import", { method: "POST", headers: { "x-lens-request": "1" } });
   const stats = res.ok ? await res.json() : null;
   setStatus(stats ? `Imported ${stats.files_imported} changed files.` : "Import failed.");
   await load();
@@ -692,6 +860,7 @@ document.getElementById("range").addEventListener("click", (e) => {
 });
 document.getElementById("project").addEventListener("change", (e) => { state.project = e.target.value; load(); });
 document.getElementById("refresh").addEventListener("click", refresh);
+document.getElementById("coach-btn").addEventListener("click", askCoach);
 document.getElementById("session-close").addEventListener("click", () => { document.getElementById("session").hidden = true; });
 document.getElementById("day-table-toggle").addEventListener("click", (e) => {
   const t = document.getElementById("day-table");

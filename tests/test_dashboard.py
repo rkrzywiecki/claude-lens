@@ -10,6 +10,8 @@ from claude_lens.config import Settings
 from claude_lens.store import Store
 from claude_lens.web.app import create_dashboard
 
+ACTION = {"x-lens-request": "1"}
+
 
 @pytest.fixture
 def client(tmp_path: Path) -> TestClient:
@@ -40,12 +42,12 @@ def test_page_and_import(client: TestClient) -> None:
     page = client.get("/")
     assert page.status_code == 200
     assert "<title>claude-lens</title>" in page.text
-    stats = client.post("/api/import").json()
+    stats = client.post("/api/import", headers=ACTION).json()
     assert stats["records"] == 3
 
 
 def test_summary(client: TestClient) -> None:
-    client.post("/api/import")
+    client.post("/api/import", headers=ACTION)
     data = client.get("/api/summary").json()
     assert data["by_day"]["total"]["requests"] == 3
     assert {"by_model", "by_project", "cache", "loops", "projects"} <= data.keys()
@@ -58,7 +60,7 @@ def test_summary(client: TestClient) -> None:
 
 
 def test_session(client: TestClient) -> None:
-    client.post("/api/import")
+    client.post("/api/import", headers=ACTION)
     detail = client.get("/api/sessions/sess-1").json()
     assert len(detail["timeline"]) == 2
     assert detail["project"] == "~/work/app"
@@ -76,7 +78,7 @@ def test_import_without_transcripts(tmp_path: Path) -> None:
     client = TestClient(
         create_dashboard(settings, open_store=lambda: Store(db)), base_url="http://localhost"
     )
-    assert client.post("/api/import").json()["records"] == 0
+    assert client.post("/api/import", headers=ACTION).json()["records"] == 0
 
 
 def test_cli_refuses_non_loopback_dashboard() -> None:

@@ -7,9 +7,17 @@ ROOT = Path(__file__).resolve().parent.parent / "examples" / "transcripts"
 
 
 def entry(
-    session: str, cwd: str, n: int, ts: str, model: str, tool: dict[str, object], **usage: int
+    session: str,
+    cwd: str,
+    n: int,
+    ts: str,
+    model: str,
+    tool: dict[str, object],
+    effort: str,
+    **usage: int,
 ) -> dict[str, object]:
     return {
+        "effort": effort,
         "type": "assistant",
         "sessionId": session,
         "cwd": cwd,
@@ -21,7 +29,11 @@ def entry(
             "role": "assistant",
             "stop_reason": "tool_use",
             "content": [{"type": "tool_use", "id": f"toolu_{session[:4]}_{n:03d}", **tool}],
-            "usage": {"input_tokens": 3, **usage},
+            "usage": {
+                "input_tokens": 3,
+                "output_tokens_details": {"thinking_tokens": usage["output_tokens"] // 3},
+                **usage,
+            },
         },
     }
 
@@ -47,7 +59,10 @@ def main() -> None:
                 tool = {"name": "Edit", "input": {"file_path": f"{cwd}/app.py", "old": str(n)}}
             else:
                 tool = {"name": "Bash", "input": {"command": f"step {n}"}}
-            lines.append(entry(session, cwd, n, ts, model, tool, output_tokens=800, **usage))
+            effort = "medium" if cached else "high"
+            lines.append(
+                entry(session, cwd, n, ts, model, tool, effort, output_tokens=800, **usage)
+            )
             context += 2_000
         path = ROOT / project_dir / f"{session}.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)

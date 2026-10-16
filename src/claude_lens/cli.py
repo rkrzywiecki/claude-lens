@@ -1,7 +1,8 @@
-"""Typer CLI: import, report, cache-doctor, loops, session, serve, dashboard."""
+"""Typer CLI: import, report, cache-doctor, loops, session, insights, whatif, serve, dashboard."""
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated
@@ -19,10 +20,13 @@ from claude_lens.pricing import Pricing, PricingError, load_pricing
 from claude_lens.queries import Filters, QueryError
 from claude_lens.render import (
     render_cache_doctor,
+    render_coach,
     render_import,
+    render_insights,
     render_loops,
     render_report,
     render_session,
+    render_whatif,
 )
 from claude_lens.store import Store, StoreError
 
@@ -225,6 +229,113 @@ def session(
         _echo_json(result)
     else:
         render_session(console, result)
+
+
+@app.command()
+def insights(
+    days: DaysOpt = None,
+    since: SinceOpt = None,
+    until: UntilOpt = None,
+    project: ProjectOpt = None,
+    coach: Annotated[
+        bool, typer.Option(help="Ask Claude for a prioritized plan (calls the API, costs cents).")
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="With --coach: print what would be sent, call nothing."),
+    ] = False,
+    language: Annotated[
+        str | None, typer.Option("--lang", help="Coach language (default: LENS_COACH_LANGUAGE).")
+    ] = None,
+    check_files: Annotated[
+        bool, typer.Option(help="Check project directories for CLAUDE.md.")
+    ] = True,
+    as_json: JsonOpt = False,
+    refresh: RefreshOpt = True,
+    db: DbOpt = None,
+) -> None:
+    """Recommendations: models, effort, context, cache, workflow and best practices."""
+    from claude_lens.insights.coach import CoachError, coach_payload, run_coach
+    from claude_lens.insights.engine import build_insights
+
+    settings = get_settings()
+    filters = _filters(days, since, until, project)
+    pricing = _pricing()
+    with _open_store(db) as store:
+        _refresh(store, refresh)
+        result = build_insights(store, pricing, filters, check_files=check_files)
+    lang = language or settings.coach_language
+    if coach and dry_run:
+        typer.echo(json.dumps(coach_payload(result, lang), indent=2))
+        return
+    advice = None
+    if coach:
+        try:
+            with err_console.status(f"Asking {settings.coach_model} for a plan…"):
+                advice = run_coach(
+                    result,
+                    pricing,
+                    settings.coach_model,
+                    settings.coach_effort,
+                    lang,
+                    timeout=settings.coach_timeout,
+                )
+        except CoachError as exc:
+            raise _fail(f"Coach: {exc}.") from exc
+    if as_json:
+        data = result.model_dump(mode="json")
+        data["coach"] = advice.model_dump(mode="json") if advice else None
+        typer.echo(json.dumps(data, indent=2))
+        return
+    render_insights(console, result)
+    if advice:
+        render_coach(console, advice)
+
+
+@app.command()
+def whatif(
+    to: Annotated[str, typer.Option("--to", help="Model to reprice on, e.g. claude-sonnet-5-5.")],
+    model: Annotated[
+        str | None, typer.Option("--from", help="Only requests whose model contains this text.")
+    ] = None,
+    part: Annotated[
+        str, typer.Option(help="Which requests: all, main (main conversation) or subagents.")
+    ] = "all",
+    days: DaysOpt = None,
+    since: SinceOpt = None,
+    until: UntilOpt = None,
+    project: ProjectOpt = None,
+    as_json: JsonOpt = False,
+    refresh: RefreshOpt = True,
+    db: DbOpt = None,
+) -> None:
+    """Reprice recorded requests on another model (same tokens; an estimate, not a result)."""
+    from claude_lens.insights.whatif import reprice
+    from claude_lens.models import RequestRecord
+
+    if part not in ("all", "main", "subagents"):
+        raise _fail(f"--part must be all, main or subagents, not {part!r}")
+    filters = _filters(days, since, until, project)
+    pricing = _pricing()
+
+    def select(r: RequestRecord) -> bool:
+        if model and model not in r.model:
+            return False
+        return part == "all" or (r.is_sidechain if part == "subagents" else not r.is_sidechain)
+
+    with _open_store(db) as store:
+        _refresh(store, refresh)
+        try:
+            result = reprice(
+                store.requests(filters.since, filters.until, filters.project), pricing, to, select
+            )
+        except ValueError as exc:
+            raise _fail(f"{exc}. Add it to pricing.yaml or pick a priced model.") from exc
+    if as_json:
+        _echo_json(result)
+    else:
+        selection = ", ".join(filter(None, [f"model ~ {model}" if model else None, part]))
+        render_whatif(console, result, selection)
 
 
 @app.command()

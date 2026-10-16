@@ -43,6 +43,7 @@ class ResponseObservation(BaseModel):
     stop_reason: str | None = None
     tool_names: list[str] = Field(default_factory=list)
     tool_uses: list[ToolUse] = Field(default_factory=list)
+    thinking_tokens: int | None = None
     ttft_ms: float | None = None
     latency_ms: float | None = None
 
@@ -158,6 +159,7 @@ class ResponseTee:
             stop_reason=stop_reason if isinstance(stop_reason, str) else None,
             tool_names=self._tools,
             tool_uses=self._tool_uses,
+            thinking_tokens=_thinking_tokens(self._usage),
             ttft_ms=self._ttft,
             latency_ms=self._latency,
         )
@@ -252,3 +254,9 @@ def _parse_input(parts: list[str]) -> Any:
         return json.loads(text)
     except ValueError:
         return None
+
+
+def _thinking_tokens(usage: dict[str, Any]) -> int | None:
+    details = usage.get("output_tokens_details")
+    value = details.get("thinking_tokens") if isinstance(details, dict) else None
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None

@@ -5,10 +5,14 @@ from __future__ import annotations
 from datetime import datetime
 
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.table import Table
 
 from claude_lens.analysis.cache import CacheDoctorReport
 from claude_lens.analysis.session import SessionDetail
+from claude_lens.insights.coach import CoachResult
+from claude_lens.insights.models import InsightsReport
+from claude_lens.insights.whatif import WhatIf
 from claude_lens.models import ImportStats, Report, ReportRow
 from claude_lens.queries import LoopReport
 from claude_lens.report import shorten_home
@@ -228,3 +232,91 @@ def render_session(console: Console, detail: SessionDetail) -> None:
     console.print(table)
     if detail.loops:
         render_loops(console, LoopReport(findings=detail.loops, projects={}))
+
+
+_SEVERITY = {
+    "high": "[bold red]HIGH[/bold red]",
+    "medium": "[yellow]MEDIUM[/yellow]",
+    "low": "[cyan]LOW[/cyan]",
+    "info": "[dim]INFO[/dim]",
+}
+_STATUS = {
+    "pass": "[green]✔ pass[/green]",
+    "warn": "[yellow]▲ warn[/yellow]",
+    "fail": "[red]✖ fail[/red]",
+    "n/a": "[dim]- n/a[/dim]",
+}
+_SAVINGS_KIND = {"reprice": "repriced", "estimate": "estimate", "upper_bound": "up to"}
+
+
+def render_insights(console: Console, report: InsightsReport) -> None:
+    p = report.profile
+    if not p.requests:
+        console.print("No requests in the selected range. Run `claude-lens import` first?")
+        return
+    mix = ", ".join(f"{m.key} {m.share:.0%}" for m in p.models[:4])
+    efforts = ", ".join(f"{m.key} {m.share:.0%}" for m in p.efforts)
+    console.print(
+        f"[bold]Usage profile[/bold]  {p.sessions} sessions, {p.requests:,} requests, "
+        f"{money(p.cost)} API-equivalent "
+        f"(Claude Code {money(p.claude_code_cost)}, API apps {money(p.api_cost)})\n"
+        f"  Models by cost: {mix}\n"
+        f"  Effort by cost: {efforts}\n"
+        f"  Thinking share of output: {_pct(p.thinking_share)}, subagents' share of cost: "
+        f"{_pct(p.subagent_cost_share)}, cache hit ratio: {_pct(p.cache_hit_ratio)}\n"
+    )
+    if not report.insights:
+        console.print("No recommendations: nothing in this range crossed a threshold.")
+    for n, i in enumerate(report.insights, 1):
+        saving = ""
+        if i.savings_usd:
+            kind = _SAVINGS_KIND[i.savings_kind or "estimate"]
+            saving = f"  [bold]{kind} {money(i.savings_usd)}[/bold]"
+        console.print(f"{n}. {_SEVERITY[i.severity]} [bold]{i.title}[/bold]{saving}")
+        console.print(f"   {i.finding}", highlight=False)
+        console.print(f"   [green]→[/green] {i.recommendation}", highlight=False)
+        if i.evidence:
+            shown = "; ".join(i.evidence[:3]) + (" …" if len(i.evidence) > 3 else "")
+            console.print(f"   [dim]{shown}[/dim]", highlight=False)
+        console.print(f"   [dim]confidence {i.confidence} · {i.source}[/dim]\n", highlight=False)
+    table = Table(title="Best practices", title_justify="left")
+    table.add_column("Status")
+    table.add_column("Practice")
+    table.add_column("Evidence", overflow="fold")
+    for pr in report.practices:
+        table.add_row(_STATUS[pr.status], pr.title, pr.evidence)
+    console.print(table)
+    console.print(
+        "[dim]Savings are API-equivalent list prices; overlapping recommendations can count the "
+        "same tokens twice. Logs show cost, not quality: treat cheaper models and lower effort "
+        "as experiments.[/dim]"
+    )
+
+
+def render_coach(console: Console, result: CoachResult) -> None:
+    console.rule("Coach")
+    console.print(Markdown(result.text))
+    cost = f", {money(result.cost)}" if result.cost is not None else ""
+    console.print(
+        f"[dim]{result.model}, {tokens(result.usage.prompt_tokens)} in / "
+        f"{tokens(result.usage.output_tokens)} out{cost}[/dim]"
+    )
+
+
+def render_whatif(console: Console, result: WhatIf, selection: str) -> None:
+    if not result.requests:
+        console.print(f"No priced requests matched ({selection}).")
+        return
+    console.print(
+        f"{result.requests:,} requests ({selection}): {money(result.current_cost)} as recorded, "
+        f"{money(result.target_cost)} on {result.target}: "
+        f"[bold]{money(result.savings)}[/bold] difference."
+    )
+    console.print(
+        "[dim]Same token counts repriced. Another model produces different token counts and "
+        "different results: this is the price of the experiment, not its outcome.[/dim]"
+    )
+
+
+def _pct(value: float | None) -> str:
+    return "-" if value is None else f"{value:.0%}"

@@ -18,7 +18,7 @@ import structlog
 from pydantic import BaseModel, ConfigDict
 
 from claude_lens.fingerprint import segment_fingerprints, tool_input_hash, tool_target
-from claude_lens.models import RequestRecord, ToolCall
+from claude_lens.models import RequestFeatures, RequestRecord, ToolCall
 from claude_lens.proxy.sessions import SessionTracker
 from claude_lens.proxy.tee import ResponseTee
 from claude_lens.store import Store
@@ -58,6 +58,44 @@ def tool_results(body: dict[str, Any]) -> list[tuple[str, bool]]:
         and block.get("type") == "tool_result"
         and isinstance(block.get("tool_use_id"), str)
     ]
+
+
+def request_effort(body: dict[str, Any]) -> str | None:
+    config = body.get("output_config")
+    effort = config.get("effort") if isinstance(config, dict) else None
+    return effort if isinstance(effort, str) else None
+
+
+def request_features(body: dict[str, Any]) -> RequestFeatures:
+    """Cost-relevant settings of a request body; sizes and flags only, no content."""
+    tools = body.get("tools")
+    thinking = body.get("thinking")
+    max_tokens = body.get("max_tokens")
+    system = body.get("system")
+    if isinstance(system, str):
+        system_chars = len(system)
+    elif isinstance(system, list):
+        system_chars = sum(
+            len(b["text"]) for b in system if isinstance(b, dict) and isinstance(b.get("text"), str)
+        )
+    else:
+        system_chars = 0
+    return RequestFeatures(
+        stream=body.get("stream") is True,
+        max_tokens=max_tokens if isinstance(max_tokens, int) else None,
+        tool_count=len(tools) if isinstance(tools, list) else 0,
+        cache_control=_has_cache_control(body),
+        thinking=thinking.get("type") if isinstance(thinking, dict) else None,
+        system_chars=system_chars,
+    )
+
+
+def _has_cache_control(value: Any) -> bool:
+    if isinstance(value, dict):
+        return "cache_control" in value or any(_has_cache_control(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_has_cache_control(v) for v in value)
+    return False
 
 
 class Recorder:
@@ -124,6 +162,9 @@ class Recorder:
             ttft_ms=observation.ttft_ms,
             latency_ms=observation.latency_ms,
             segments=segment_fingerprints(body) if isinstance(body, dict) else None,
+            effort=request_effort(body) if isinstance(body, dict) else None,
+            thinking_tokens=observation.thinking_tokens,
+            features=request_features(body) if isinstance(body, dict) else None,
         )
         results = tool_results(body) if isinstance(body, dict) else []
         return RecordBatch(record=record, tool_calls=calls, tool_results=results)

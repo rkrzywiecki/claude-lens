@@ -2,7 +2,9 @@
 
 The dashboard has no authentication, so it is meant for the loopback interface only, and
 requests are accepted only with a loopback `Host` header (a page on another site cannot read the
-data through DNS rebinding). It never calls the Claude API.
+data through DNS rebinding). POST endpoints also require an `x-lens-request: 1` header, so a
+page on another site cannot trigger them. Only `POST /api/coach` calls the Claude API, and only
+when the user asks for it.
 """
 
 from __future__ import annotations
@@ -10,9 +12,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from importlib import resources
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -22,14 +24,30 @@ from claude_lens.analysis.cache import CacheDoctorReport
 from claude_lens.analysis.session import SessionDetail
 from claude_lens.config import Settings
 from claude_lens.importers.claude_code import import_transcripts
+from claude_lens.insights.coach import CoachError, CoachResult, run_coach
+from claude_lens.insights.engine import build_insights
+from claude_lens.insights.models import InsightsReport
 from claude_lens.models import ImportStats, Report
 from claude_lens.pricing import Pricing, load_pricing
 from claude_lens.queries import Filters, LoopReport, QueryError
 from claude_lens.report import shorten_home
 from claude_lens.store import Store
 
+if TYPE_CHECKING:
+    import anthropic
+
 LOOPBACK_HOSTS = ["127.0.0.1", "localhost", "[::1]", "::1"]
 TOP_SESSIONS = 10
+# Required on POST: a cross-site page cannot add a custom header without a CORS preflight,
+# which this server never approves, so it cannot trigger an import or a paid coach call.
+ACTION_HEADER = "x-lens-request"
+
+
+def require_action_header(
+    x_lens_request: Annotated[str | None, Header(alias=ACTION_HEADER)] = None,
+) -> None:
+    if x_lens_request != "1":
+        raise HTTPException(status_code=403, detail=f"missing {ACTION_HEADER} header")
 
 
 class Summary(BaseModel):
@@ -48,6 +66,7 @@ def create_dashboard(
     open_store: Callable[[], Store] | None = None,
     pricing: Pricing | None = None,
     extra_hosts: list[str] | None = None,
+    coach_client: anthropic.Anthropic | None = None,
 ) -> FastAPI:
     open_store = open_store or (lambda: Store(settings.resolved_db_path()))
     pricing = pricing or load_pricing(settings.resolved_pricing_path())
@@ -87,6 +106,35 @@ def create_dashboard(
                 projects=sorted(row.key for row in all_projects.rows),
             )
 
+    @app.get("/api/insights")
+    def insights(
+        days: Annotated[int | None, Query(ge=1)] = None,
+        project: str | None = None,
+    ) -> InsightsReport:
+        with open_store() as store:
+            return _short_insight_paths(build_insights(store, pricing, filters(days, project)))
+
+    @app.post("/api/coach", dependencies=[Depends(require_action_header)])
+    def coach(
+        days: Annotated[int | None, Query(ge=1)] = None,
+        project: str | None = None,
+        lang: str | None = None,
+    ) -> CoachResult:
+        with open_store() as store:
+            report = build_insights(store, pricing, filters(days, project))
+        try:
+            return run_coach(
+                report,
+                pricing,
+                settings.coach_model,
+                settings.coach_effort,
+                lang or settings.coach_language,
+                client=coach_client,
+                timeout=settings.coach_timeout,
+            )
+        except CoachError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
     @app.get("/api/sessions/{session_id}")
     def session(session_id: str) -> SessionDetail:
         with open_store() as store:
@@ -96,7 +144,7 @@ def create_dashboard(
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
         return detail.model_copy(update={"project": shorten_home(detail.project)})
 
-    @app.post("/api/import")
+    @app.post("/api/import", dependencies=[Depends(require_action_header)])
     def refresh() -> ImportStats:
         root = settings.resolved_transcripts_dir()
         if not root.is_dir():
@@ -123,3 +171,12 @@ def _short_loop_paths(report: LoopReport) -> LoopReport:
     ]
     projects = {k: shorten_home(v) for k, v in report.projects.items()}
     return LoopReport(findings=findings, projects=projects)
+
+
+def _short_insight_paths(report: InsightsReport) -> InsightsReport:
+    home = str(Path.home())
+    insights = [
+        i.model_copy(update={"evidence": [e.replace(home, "~") for e in i.evidence]})
+        for i in report.insights
+    ]
+    return report.model_copy(update={"insights": insights})

@@ -21,7 +21,7 @@ import structlog
 from pydantic import BaseModel, Field
 
 from claude_lens.fingerprint import tool_input_hash, tool_target
-from claude_lens.models import ImportStats, RequestRecord, Speed, ToolCall, Usage
+from claude_lens.models import ImportStats, RequestRecord, SessionMeta, Speed, ToolCall, Usage
 from claude_lens.store import Store
 
 log = structlog.get_logger(__name__)
@@ -55,6 +55,7 @@ class TranscriptData(BaseModel):
     tool_calls: list[ToolCall] = Field(default_factory=list)
     # tool_use id -> whether its tool_result was an error.
     tool_results: dict[str, bool] = Field(default_factory=dict)
+    sessions: list[SessionMeta] = Field(default_factory=list)
 
 
 def parse_transcript(
@@ -76,6 +77,7 @@ def parse_transcript_data(
     merged: dict[str, RequestRecord] = {}
     calls: dict[str, ToolCall] = {}
     results: dict[str, bool] = {}
+    metas: dict[str, SessionMeta] = {}
     fallback_project = fallback_project or path.parent.name
     with path.open(encoding="utf-8", errors="replace") as fh:
         for line in fh:
@@ -87,6 +89,7 @@ def parse_transcript_data(
                 stats.bad_lines += 1
                 continue
             results.update(_tool_results(entry))
+            _observe_session(metas, entry, str(path))
             record = _record(entry, fallback_project)
             if record is None:
                 continue
@@ -100,7 +103,10 @@ def parse_transcript_data(
         if tool_use_id in results:
             calls[tool_use_id] = call.model_copy(update={"is_error": results[tool_use_id]})
     return TranscriptData(
-        records=list(merged.values()), tool_calls=list(calls.values()), tool_results=results
+        records=list(merged.values()),
+        tool_calls=list(calls.values()),
+        tool_results=results,
+        sessions=list(metas.values()),
     )
 
 
@@ -132,6 +138,7 @@ def import_transcripts(store: Store, root: Path, *, full: bool = False) -> Impor
         stats.tool_calls += store.upsert_tool_calls(data.tool_calls)
         # Results whose call was logged in another file (a resumed or forked session).
         store.mark_tool_results(data.tool_results.items())
+        store.upsert_session_meta(data.sessions)
         store.mark_imported(path, st.st_size, st.st_mtime)
         stats.files_imported += 1
     return stats
@@ -160,6 +167,10 @@ def _record(entry: Any, fallback_project: str) -> RequestRecord | None:
     cwd = entry.get("cwd")
     request_id = entry.get("requestId")
     stop_reason = message.get("stop_reason")
+    effort = entry.get("effort")
+    agent_id = entry.get("agentId")
+    details = usage.get("output_tokens_details")
+    thinking = details.get("thinking_tokens") if isinstance(details, dict) else None
     return RequestRecord(
         message_id=message_id,
         request_id=request_id if isinstance(request_id, str) else None,
@@ -173,7 +184,59 @@ def _record(entry: Any, fallback_project: str) -> RequestRecord | None:
         tool_names=_tool_names(message.get("content")),
         is_sidechain=entry.get("isSidechain") is True,
         source="claude_code",
+        effort=effort if isinstance(effort, str) else None,
+        thinking_tokens=_int(thinking) if thinking is not None else None,
+        agent_id=agent_id if isinstance(agent_id, str) else None,
     )
+
+
+def _observe_session(metas: dict[str, SessionMeta], entry: Any, source_file: str) -> None:
+    """Fold one transcript entry into its session's metadata."""
+    if not isinstance(entry, dict) or not isinstance(entry.get("sessionId"), str):
+        return
+    session_id = entry["sessionId"]
+    meta = metas.setdefault(session_id, SessionMeta(session_id=session_id, source_file=source_file))
+    for field, key in (("entrypoint", "entrypoint"), ("version", "version")):
+        value = entry.get(key)
+        if isinstance(value, str) and value and getattr(meta, field) is None:
+            setattr(meta, field, value)
+    kind = entry.get("type")
+    if kind == "user":
+        mode = entry.get("permissionMode")
+        if isinstance(mode, str) and mode not in meta.permission_modes:
+            meta.permission_modes.append(mode)
+        if _is_human_prompt(entry):
+            meta.human_prompts += 1
+        if entry.get("interruptedMessageId"):
+            meta.interruptions += 1
+        if entry.get("toolDenialKind"):
+            meta.tool_denials += 1
+    elif kind == "assistant":
+        if entry.get("isApiErrorMessage") is True:
+            meta.api_errors += 1
+        for field, key in (("skills", "attributionSkill"), ("agents", "attributionAgent")):
+            value = entry.get(key)
+            names = getattr(meta, field)
+            if isinstance(value, str) and value and value not in names:
+                names.append(value)
+    elif kind == "system" and entry.get("subtype") == "turn_duration":
+        meta.active_ms += _int(entry.get("durationMs"))
+
+
+def _is_human_prompt(entry: dict[str, Any]) -> bool:
+    """A prompt the user typed, as opposed to tool results and injected context."""
+    origin = entry.get("origin")
+    if isinstance(origin, dict) and "kind" in origin:
+        return origin.get("kind") == "human"
+    if entry.get("isMeta") or entry.get("toolUseResult") is not None:
+        return False
+    message = entry.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return bool(content.strip())
+    if isinstance(content, list):
+        return not any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
+    return False
 
 
 def _tool_calls(entry: dict[str, Any], record: RequestRecord) -> list[ToolCall]:
