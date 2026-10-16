@@ -125,7 +125,7 @@ _MIGRATIONS = (
             _SESSION_META,
         ]
     ),
-    # v5 adds git outcomes per session; filled by `claude-lens outcomes`, nothing to re-import.
+    # v5 adds git outcomes per session; commands that show outcomes fill it, nothing to re-import.
     _SESSION_OUTCOMES,
 )
 

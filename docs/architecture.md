@@ -93,8 +93,10 @@ src/claude_lens/
   tool call also keeps the file path its input names, so file churn can be reported.
 - **SQLite with `PRAGMA user_version`.** A database with a newer schema is refused rather than
   misread; an older one is migrated in place, one transaction per version (v2 added the nullable
-  `ttft_ms` and `latency_ms` columns; v3 added `segments` and the `tool_calls` table, and forgets
-  imported files so the next import reads tool calls from them).
+  `ttft_ms` and `latency_ms` columns; v3 added `segments` and the `tool_calls` table; v4 added
+  `effort`, `thinking_tokens`, `agent_id`, `features` and the `session_meta` table; v3 and v4
+  forget imported files so the next import reads the new data from every transcript; v5 added
+  the `session_outcomes` table, filled from git by the commands that show outcomes).
 - **One record per response across sources.** The upsert merges an import and a proxy record of
   the same message: the transcript's session, project and timestamp win, measured latency is
   kept, usage comes from the newest write.

@@ -9,7 +9,10 @@ agents repeating themselves, **insights** turn all of it into recommendations (w
 effort to use, how to keep context small, which best practices you follow), optionally with a
 plan written by Claude, and a local **dashboard** shows it all on one page. For sessions in a
 git repository, **outcomes** add the commits made during the session, so cost can be read as
-cost per commit (a rough proxy for kept work, not for quality).
+cost per commit (a rough proxy for kept work, not for quality). **Trends** show week by week
+whether the habits improved, and **live nudges** bring the most important advice into Claude
+Code itself: a status line with context size, cost and cache state, and a one-time hint to
+`/clear` or `/compact` when a session grows too long.
 
 It is the observability companion to [claude-guard](https://github.com/rkrzywiecki/claude-guard).
 claude-guard decides what may pass; claude-lens only watches, never blocks, and never changes
@@ -20,19 +23,27 @@ flowchart LR
     T["~/.claude/projects/**/*.jsonl<br/>(Claude Code transcripts)"] --> I[importers/claude_code.py]
     I -->|"one record per API response<br/>(merged by message id)"| S[(SQLite<br/>~/.claude-lens/lens.db)]
     S --> R["report.py, analysis/, insights/<br/>(cache doctor, loops, sessions,<br/>recommendations, practices)"]
-    R -.->|"--coach: aggregates only"| CO["Claude API (coach)"]
+    R -.->|"--coach: aggregates only"| CO["Claude: API or claude -p (coach)"]
+    T -->|"read incrementally"| L["statusline, hook UserPromptSubmit<br/>(live/, Claude Code plugin)"]
     P[pricing.yaml] --> R
     G["git log (read-only)<br/>commits per session"] -->|"outcomes.py: counts only"| S
-    R --> C["CLI: report, cache-doctor,<br/>loops, session (table or --json)"]
+    R --> C["CLI: report, cache-doctor, loops, session,<br/>insights, trends, whatif (table or --json)"]
     R --> D["claude-lens dashboard :8789"]
     CL["Claude Code / SDK<br/>ANTHROPIC_BASE_URL"] --> X["claude-lens serve :8788<br/>(proxy/app.py)"]
     X <-->|"unchanged"| A[api.anthropic.com]
     X -->|"SSE tee: usage, TTFT, latency,<br/>prompt and tool hashes"| S
 ```
 
-**Status:** milestones M1-M5 are done: transcript importer and reports, API proxy, cache doctor
-and loop detection, dashboard, insights. Live nudges in Claude Code (status line, prompt hook,
-plugin) are done too. See [Roadmap](#roadmap).
+**Status:** everything on the [Roadmap](#roadmap) is done: transcript importer and reports, API
+proxy, cache doctor and loop detection, dashboard, insights with the coach, trends, git outcomes
+and live nudges. The Claude Code plugin passes `claude plugin validate`; it has been exercised
+by tests and from the shell, not yet in an interactive Claude Code session.
+
+Documentation: [architecture](docs/architecture.md), [importer](docs/importers.md),
+[pricing](docs/pricing.md), [proxy](docs/proxy.md), [cache doctor, loops and sessions](docs/analysis.md),
+[insights and coach](docs/insights.md), [trends](docs/trends.md), [outcomes](docs/outcomes.md),
+[dashboard](docs/dashboard.md), [live nudges](docs/nudges.md),
+[troubleshooting](docs/troubleshooting.md).
 
 ## Requirements
 
@@ -63,6 +74,7 @@ uv run claude-lens report                     # cost per day (imports changes fi
 uv run claude-lens report --by project --days 7
 uv run claude-lens report --by session --top 10
 uv run claude-lens report --by model --since 2026-10-01 --until 2026-10-15
+uv run claude-lens report --by effort --days 30   # spend per effort level (low ... max)
 uv run claude-lens report --project claude-guard --json
 uv run claude-lens report --outcomes --by model   # commits, lines, cost per commit (git repos)
 uv run claude-lens cache-doctor --days 30     # prompt-cache misses, causes, avoidable cost
@@ -564,6 +576,8 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy src
 6. **Trends (done):** `trends` and `insights --compare`: did the recommendations help.
 7. **Live nudges (done):** `statusline`, the `UserPromptSubmit` nudge hook, `install`, and a
    Claude Code plugin.
+8. **Outcomes (done):** commits, files and lines per session from git; cost per commit in
+   `report --outcomes`, `session`, `insights` and the dashboard.
 
 ## License
 
