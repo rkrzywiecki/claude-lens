@@ -453,3 +453,37 @@ def hook(
     from claude_lens.live.nudges import main as run
 
     raise typer.Exit(run(event))
+
+
+@app.command()
+def install(
+    user: Annotated[
+        bool, typer.Option("--user", help="Write ~/.claude/settings.json, not the project's.")
+    ] = False,
+    statusline: Annotated[bool, typer.Option(help="Install the status line.")] = True,
+    hook: Annotated[bool, typer.Option(help="Install the UserPromptSubmit hook.")] = True,
+    force: Annotated[
+        bool, typer.Option("--force", help="Replace a status line that is not claude-lens's.")
+    ] = False,
+) -> None:
+    """Add the status line and the nudge hook to Claude Code settings (with a backup)."""
+    from claude_lens.live.install import InstallError, settings_file
+    from claude_lens.live.install import install as run
+
+    path = settings_file(user)
+    try:
+        result = run(path, statusline=statusline, hook=hook, force=force)
+    except InstallError as exc:
+        raise _fail(str(exc)) from exc
+    console.print(f"{'Updated' if result.changed else 'Already up to date:'} {result.path}")
+    if result.backup:
+        console.print(f"Backup: {result.backup}")
+    if result.statusline:
+        console.print("Status line: claude-lens statusline")
+    if result.hook:
+        console.print("Hook: UserPromptSubmit -> claude-lens hook UserPromptSubmit")
+    if result.kept_statusline:
+        console.print(
+            f"[yellow]Kept your status line ({result.kept_statusline}); "
+            "use --force to replace it.[/yellow]"
+        )
