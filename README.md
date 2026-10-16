@@ -64,6 +64,8 @@ uv run claude-lens report --project claude-guard --json
 uv run claude-lens cache-doctor --days 30     # prompt-cache misses, causes, avoidable cost
 uv run claude-lens loops --days 30            # repeated calls, error streaks, file churn
 uv run claude-lens insights --days 30         # recommendations and best-practice scorecard
+uv run claude-lens insights --days 14 --compare   # ... and what changed since the 14 days before
+uv run claude-lens trends --weeks 8           # did the habits improve, week by week
 uv run claude-lens whatif --to claude-sonnet-5-5 --from opus   # reprice Opus traffic on Sonnet
 uv run claude-lens dashboard                  # local web dashboard on http://127.0.0.1:8789
 ```
@@ -147,6 +149,21 @@ without an API key. Logs show
 cost, not quality: cheaper models and lower effort are presented as experiments. Details, rules
 and thresholds: [docs/insights.md](docs/insights.md).
 
+## Trends
+
+`claude-lens trends` closes the loop on the recommendations: it measures the same habits per
+week (local ISO weeks, the current one marked `*`) and marks each change against the previous
+week, green when it is an improvement and red when it is not. The measures use the insights
+definitions and thresholds, so a week shows what `insights` would show for it: API-equivalent
+cost, cost of context above 50k tokens, the share of long sessions that grew past 150k tokens
+without a reset, the share of 5+ file changes made in plan mode, the share of sessions with
+rework, cache hit ratio and avoidable cache penalty, thinking share, and cost share by model and
+effort.
+
+`insights --compare` adds a **Since last period** block (the selected range against the range of
+the same length before it) to the report and, as aggregates, to the coach's input, so the coach
+can say what improved. Details: [docs/trends.md](docs/trends.md).
+
 ## Dashboard
 
 ```bash
@@ -155,12 +172,14 @@ uv run claude-lens dashboard
 
 Opens on `http://127.0.0.1:8789` and imports changed transcripts when the page loads. One row of
 filters (7/30/90 days or all, project) scopes totals, the recommendations and best-practice
-scorecard (with **Ask Claude for a plan**), cost per day stacked by token kind, cost by model and
-project, the cache doctor, loops, and a session view with a prompt-size chart that marks every
-cache miss. It follows the system light or dark mode, works at phone width, and loads
-nothing from the network. It has no authentication: it binds to loopback, answers only
-loopback `Host` headers, and its POST actions (import, coach) require a header other sites cannot
-send. Details: [docs/dashboard.md](docs/dashboard.md).
+scorecard (with **Ask Claude for a plan**), weekly trends as small line charts (one per measure,
+each with its own scale and a table view; they follow only the project filter), cost per day
+stacked by token kind, cost by model and project, the cache doctor, loops, and a session view
+with a prompt-size chart that marks every cache miss. It follows the system light or dark mode,
+works at phone width, and loads nothing from the network. It has no authentication: it binds to
+loopback, answers only loopback `Host` headers, and its POST actions (import, coach) require a
+header other sites cannot send.
+Details: [docs/dashboard.md](docs/dashboard.md).
 
 ## Live nudges in Claude Code
 
@@ -374,6 +393,51 @@ echo '{"session_id": "c0ffee00-0000-4000-8000-000000000001", "transcript_path": 
 Run it again and it prints nothing: each nudge is shown once per session.
 `scripts/make_nudge_transcript.py` regenerates the example.
 
+`examples/trends` holds four synthetic weeks of one developer getting better at those habits
+(`scripts/make_trend_transcripts.py` regenerates them). `--until` pins the last week shown; the
+`*` marks the week that is still running, so it depends on the day you run it:
+
+```bash
+export LENS_TRANSCRIPTS_DIR=examples/trends LENS_DB_PATH=examples/trends.db
+uv run claude-lens trends --weeks 4 --until 2026-10-16
+```
+
+```
+Weekly trends
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━┓
+┃ Metric                      ┃ 26-W39 ┃  26-W40 ┃  26-W41 ┃ 26-W42* ┃   Change ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━┩
+│ API-equivalent cost         │  $1.04 │ $1.04 = │ $0.56 ↓ │ $0.46 ↓ │ -$0.10 ↓ │
+│ Context cost                │  $0.14 │ $0.14 = │ $0.06 ↓ │ $0.06 = │        = │
+│ Long sessions without reset │   100% │  100% = │    0% ↓ │    0% = │        = │
+│ Large changes planned       │     0% │  100% ↑ │  100% = │  100% = │        = │
+│ Sessions with rework        │    50% │   50% = │    0% ↓ │    0% = │        = │
+│ Cache hit ratio             │    97% │   97% = │   97% = │   97% = │        = │
+│ Avoidable cache penalty     │  $0.00 │ $0.00 = │ $0.00 = │ $0.00 = │        = │
+│ Thinking share              │    33% │   33% = │   33% = │   33% = │        = │
+│ Sessions                    │      2 │       2 │       2 │       2 │          │
+└─────────────────────────────┴────────┴─────────┴─────────┴─────────┴──────────┘
+```
+
+(Followed by cost share by model and by effort per week: Opus at high effort in the first two
+weeks, Sonnet at medium effort by the last.) The same improvement as two ranges:
+
+```bash
+uv run claude-lens insights --since 2026-10-05 --until 2026-10-18 --compare --no-check-files
+```
+
+```
+Since last period  2026-10-05 … 2026-10-18 vs 2026-09-21 … 2026-10-04
+  API-equivalent cost: $2.07 → $1.02 -$1.05 ↓ better
+  Context cost: $0.29 → $0.11 -$0.18 ↓ better
+  Long sessions without reset: 100% → 0% -100 pp ↓ better
+  Large changes planned: 50% → 100% +50 pp ↑ better
+  Sessions with rework: 50% → 0% -50 pp ↓ better
+  Cache hit ratio: 97% → 97% = same
+  Avoidable cache penalty: $0.00 → $0.00 = same
+  Thinking share: 33% → 33% = same
+```
+
 ## Tests and quality
 
 ```bash
@@ -401,6 +465,9 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy src
 - **Recommendations are heuristics with fixed thresholds.** They read cost and behavior, not
   the quality of the results: a cheaper model or a lower effort is a hypothesis to test.
   Savings of different recommendations can overlap.
+- **Trends show change, not cause.** A cheaper week can mean less work rather than better
+  habits, shares of a few sessions jump in large steps, and a session that spans two weeks
+  counts in both (its typed prompts and interruptions are per session, not per week).
 - **Cache and loop analysis is heuristic.** Transcripts do not contain the prompt, so the cache
   doctor can name the changed segment only for proxy records; for transcripts it separates TTL
   expiry from everything else. Loop thresholds are fixed and will flag some legitimate work
@@ -424,7 +491,8 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy src
 4. **M4 (done):** local web dashboard.
 5. **M5 (done):** `insights` (recommendations, best-practice scorecard, optional LLM coach) and
    `whatif`.
-6. **Live nudges (done):** `statusline`, the `UserPromptSubmit` nudge hook, `install`, and a
+6. **Trends (done):** `trends` and `insights --compare`: did the recommendations help.
+7. **Live nudges (done):** `statusline`, the `UserPromptSubmit` nudge hook, `install`, and a
    Claude Code plugin.
 
 ## License

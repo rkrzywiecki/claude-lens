@@ -4,6 +4,7 @@
 uv run claude-lens insights [--days N] [--project TEXT] [--json] [--no-check-files]
 uv run claude-lens insights --coach [--lang Polish]      # add a plan written by Claude (paid)
 uv run claude-lens insights --coach --dry-run            # show what the coach would receive
+uv run claude-lens insights --days 14 --compare          # add "since last period"
 uv run claude-lens whatif --to claude-sonnet-5-5 [--from opus] [--part all|main|subagents]
 ```
 
@@ -93,6 +94,15 @@ model or a lower effort is an experiment to run on real tasks.
 Status: **pass** below 10% of the measured population, **warn** from 10%, **fail** from 30%,
 **n/a** when there is nothing to measure.
 
+## Compare and trends
+
+`--compare` adds a **Since last period** block: the range against the range of the same length
+before it, on the measures `trends` tracks per week (cost, context cost, long sessions without
+reset, multi-file changes planned, rework, cache hit ratio, avoidable cache penalty, thinking
+share), each with a verdict. Both use the predicates and thresholds above
+(`is_kitchen_sink`, `is_large_change`, `has_rework` in `insights/rules.py`). See
+[trends.md](trends.md).
+
 ## What-if
 
 `whatif` reprices the selected requests on another model: `--from` filters by model name,
@@ -108,7 +118,8 @@ most, a model and effort plan, what you already do well, and what to measure nex
   thinking share, cache hit ratio), each recommendation's id, title, finding, recommendation,
   saving and confidence, and the practice scorecard. **Not sent:** session ids, project paths,
   evidence lists, and of course no prompts (claude-lens never stores them). `--dry-run` prints
-  the exact payload.
+  the exact payload. With `--compare` it also gets `since_last_period` (both ranges' metrics and
+  verdicts), and the coach says what improved and what got worse.
 - **Model:** `LENS_COACH_MODEL` (default `claude-opus-5-5`) at `LENS_COACH_EFFORT` (default
   `medium`), with server-side fallbacks (`fallbacks: "default"`) on models that support them. A
   refusal is reported as an error.

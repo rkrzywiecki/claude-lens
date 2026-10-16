@@ -3,7 +3,7 @@
 ```
 src/claude_lens/
 ├── cli.py                  # Typer: import, report, cache-doctor, loops, session, insights,
-│                           #        whatif, serve, dashboard
+│                           #        trends, whatif, serve, dashboard
 ├── config.py               # Settings (env: LENS_*), is_loopback
 ├── models.py               # Usage, RequestRecord, ToolCall, CostBreakdown, ReportRow, Report
 ├── pricing.py              # pricing.yaml -> cost of one request, context window
@@ -28,7 +28,8 @@ src/claude_lens/
 │   ├── rules.py            # recommendations with evidence, savings and documentation links
 │   ├── practices.py        # best-practice scorecard
 │   ├── whatif.py           # reprice recorded tokens on another model
-│   ├── engine.py           # profile + rules + practices -> InsightsReport
+│   ├── engine.py           # load_context + profile + rules + practices -> InsightsReport
+│   ├── trends.py           # the same habits per local ISO week, and range vs previous range
 │   └── coach.py            # optional LLM coach (Anthropic SDK), aggregates only
 ├── queries.py              # store + pricing + filters -> reports (shared by CLI and dashboard)
 ├── web/
@@ -65,6 +66,8 @@ src/claude_lens/
 6. `insights/` builds per-session statistics (models, effort, thinking, tools, edited files,
    context peak, cache misses, loops, session metadata), runs the rules and the practice checks,
    and can hand the aggregated result to the coach. See [insights.md](insights.md).
+   `insights/trends.py` loads each week (or the previous range) the same way and measures it
+   with the rules' own predicates. See [trends.md](trends.md).
 7. `queries.py` is the one place that turns filters into those results; `cli.py` renders them
    with rich, `web/app.py` serves them as JSON to the dashboard. See [dashboard.md](dashboard.md).
 

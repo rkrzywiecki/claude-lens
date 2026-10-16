@@ -16,6 +16,14 @@ A single local page over the same queries as the CLI. Opening it imports changed
   link and the sessions they apply to (click one to open it), the best-practice scorecard, and
   **Ask Claude for a plan** with a language picker (calls the coach; see
   [insights.md](insights.md#coach)).
+- **Trends:** one small line chart per measure over the last eight local ISO weeks (cost,
+  context cost, long sessions without reset, multi-file changes planned, sessions with rework,
+  cache hit ratio, avoidable cache penalty, thinking share). Each chart has its own single y
+  axis (shares 0-100%), the latest value and its change against the week before (arrow for the
+  direction, word and color for better or worse). Weeks with nothing to measure leave a gap;
+  the running week is dashed. Hover or focus a chart and use the arrow keys for each week with
+  the counts behind a share. **Show table** lists every measure and the cost share by model and
+  effort. Trends follow the project filter but not the date range. See [trends.md](trends.md).
 - **Cost per day**, stacked by token kind (cache read, cache write, output, input); days without
   requests are shown empty. **Show table** lists the same numbers.
 - **Cost by model** and **cost by project** (top seven, the rest folded into "Other").
@@ -34,6 +42,7 @@ scripts, fonts or styles.
 | `GET /api/summary?days=&project=` | Reports by day, model and project, the cache doctor (top 10 sessions), loops, and the list of projects |
 | `GET /api/sessions/{id}` | `SessionDetail` for a full id or unique prefix; 404 otherwise |
 | `GET /api/insights?days=&project=` | `InsightsReport`: profile, recommendations, practices |
+| `GET /api/trends?weeks=8&project=` | `TrendsReport`: metric definitions, one entry per local ISO week (oldest first), last week's changes; `weeks` 1-104 |
 | `POST /api/coach?days=&project=&lang=` | The coach's plan (`CoachResult`); 503 with the reason when it cannot run |
 | `POST /api/import` | Import statistics |
 | `GET /healthz` | `{"status": "ok"}` |
