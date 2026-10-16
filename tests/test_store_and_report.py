@@ -114,3 +114,16 @@ def test_shorten_home() -> None:
     assert shorten_home(home + "/Projects/x") == "~/Projects/x"
     assert shorten_home(home + "-other/x") == home + "-other/x"
     assert shorten_home("/opt/x") == "/opt/x"
+
+
+def test_refused_database_closes_its_connection(tmp_path: Path) -> None:
+    import gc
+    import warnings
+
+    path = tmp_path / "not-a-db"
+    path.write_bytes(b"this is not sqlite" * 100)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", ResourceWarning)
+        with pytest.raises(sqlite3.DatabaseError):
+            Store(path)
+        gc.collect()

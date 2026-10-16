@@ -199,8 +199,13 @@ class Store:
         if str(path) != ":memory:":
             path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(path, timeout=10.0)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._migrate()
+        try:
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._migrate()
+        except BaseException:
+            # A database we refuse (newer schema, not SQLite) must not leak its connection.
+            self._conn.close()
+            raise
 
     def _migrate(self) -> None:
         (version,) = self._conn.execute("PRAGMA user_version").fetchone()
