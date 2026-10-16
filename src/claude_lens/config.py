@@ -1,0 +1,36 @@
+"""Settings read from the environment (prefix LENS_) and an optional .env file."""
+
+from __future__ import annotations
+
+from functools import lru_cache
+from pathlib import Path
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="LENS_",
+        env_file=".env",
+        extra="ignore",
+        env_ignore_empty=True,
+    )
+
+    db_path: Path = Path("~/.claude-lens/lens.db")
+    transcripts_dir: Path = Path("~/.claude/projects")
+    pricing_path: Path | None = None
+    log_level: str = "WARNING"
+
+    def resolved_db_path(self) -> Path:
+        return self.db_path.expanduser()
+
+    def resolved_transcripts_dir(self) -> Path:
+        return self.transcripts_dir.expanduser()
+
+    def resolved_pricing_path(self) -> Path | None:
+        return self.pricing_path.expanduser() if self.pricing_path else None
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
