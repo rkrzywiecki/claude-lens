@@ -93,10 +93,20 @@ def normalize_model(model: str) -> str:
 def load_pricing(path: Path | None = None) -> Pricing:
     """Load the price table from `path`, or the one bundled with the package."""
     try:
-        if path is None:
-            text = resources.files("claude_lens").joinpath("data/pricing.yaml").read_text("utf-8")
-        else:
-            text = path.read_text("utf-8")
-        return Pricing.model_validate(yaml.safe_load(text))
-    except (OSError, yaml.YAMLError, ValidationError) as exc:
+        return parse_pricing(pricing_text(path))
+    except (OSError, PricingError) as exc:
         raise PricingError(f"cannot load pricing from {path or 'package defaults'}: {exc}") from exc
+
+
+def pricing_text(path: Path | None = None) -> str:
+    """Raw YAML of the price table at `path`, or of the bundled one."""
+    if path is None:
+        return resources.files("claude_lens").joinpath("data/pricing.yaml").read_text("utf-8")
+    return path.read_text("utf-8")
+
+
+def parse_pricing(text: str) -> Pricing:
+    try:
+        return Pricing.model_validate(yaml.safe_load(text))
+    except (yaml.YAMLError, ValidationError) as exc:
+        raise PricingError(f"invalid price table: {exc}") from exc
