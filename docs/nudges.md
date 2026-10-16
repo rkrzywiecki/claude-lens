@@ -145,6 +145,11 @@ plugin/
 └── scripts/claude-lens       # finds claude-lens: $LENS_BIN, PATH, or the checkout around plugin/
 ```
 
+The plugin runs `claude-lens` from `PATH` when it is there, so install it once as a uv tool
+(`uv tool install <path to the claude-lens checkout>`, `--reinstall` after updates) and the plugin
+works from any project. Without it, the plugin falls back to `uv run` in the checkout it lives
+in; with neither, the hook stays silent and `/lens` explains how to install.
+
 ```bash
 claude plugin validate ./plugin
 claude --plugin-dir ./plugin

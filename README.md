@@ -66,6 +66,17 @@ uv sync
 cp .env.example .env
 ```
 
+To use `claude-lens` from any directory (and from the Claude Code plugin, which looks for it on
+`PATH`), install it as a uv tool from the checkout:
+
+```bash
+uv tool install .
+claude-lens --help
+```
+
+`uv tool install --reinstall .` picks up later changes. Inside the checkout, `uv run claude-lens`
+works without installing.
+
 ## Usage
 
 ```bash
@@ -523,6 +534,11 @@ uv run pytest -q
 uv run pytest -q --cov
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
 ```
+
+Any warning fails the suite (`filterwarnings = ["error"]`). Tests never use the network, a
+Claude login, an API key or a real `claude` CLI. The same checks run in CI on Python 3.12 and
+3.13 (`.github/workflows/ci.yml`) on every push and pull request. Release notes:
+[CHANGELOG.md](CHANGELOG.md).
 
 ## Limitations
 
