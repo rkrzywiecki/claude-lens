@@ -5,7 +5,9 @@ transcripts and, optionally, records live API traffic through a pass-through pro
 response is stored in a local SQLite database, and reports show API-equivalent cost, token usage
 and the **prompt-cache hit ratio** by day, project, model or session. The **cache doctor** finds
 requests that missed the prompt cache and says why and what it cost, **loop detection** flags
-agents repeating themselves, and a local **dashboard** shows it all on one page.
+agents repeating themselves, **insights** turn all of it into recommendations (which model and
+effort to use, how to keep context small, which best practices you follow), optionally with a
+plan written by Claude, and a local **dashboard** shows it all on one page.
 
 It is the observability companion to [claude-guard](https://github.com/rkrzywiecki/claude-guard).
 claude-guard decides what may pass; claude-lens only watches, never blocks, and never changes
@@ -15,7 +17,8 @@ traffic.
 flowchart LR
     T["~/.claude/projects/**/*.jsonl<br/>(Claude Code transcripts)"] --> I[importers/claude_code.py]
     I -->|"one record per API response<br/>(merged by message id)"| S[(SQLite<br/>~/.claude-lens/lens.db)]
-    S --> R["report.py, analysis/<br/>(cache doctor, loops, sessions)"]
+    S --> R["report.py, analysis/, insights/<br/>(cache doctor, loops, sessions,<br/>recommendations, practices)"]
+    R -.->|"--coach: aggregates only"| CO["Claude API (coach)"]
     P[pricing.yaml] --> R
     R --> C["CLI: report, cache-doctor,<br/>loops, session (table or --json)"]
     R --> D["claude-lens dashboard :8789"]
@@ -24,8 +27,8 @@ flowchart LR
     X -->|"SSE tee: usage, TTFT, latency,<br/>prompt and tool hashes"| S
 ```
 
-**Status:** milestones M1-M4 are done: transcript importer and reports, API proxy, cache doctor
-and loop detection, dashboard. See [Roadmap](#roadmap).
+**Status:** milestones M1-M5 are done: transcript importer and reports, API proxy, cache doctor
+and loop detection, dashboard, insights. See [Roadmap](#roadmap).
 
 ## Requirements
 
@@ -34,6 +37,8 @@ and loop detection, dashboard. See [Roadmap](#roadmap).
 - Claude Code transcripts on disk (`~/.claude/projects`), the proxy, or both. claude-lens needs
   no API key of its own: the importer calls no API, and the proxy forwards the client's
   credentials (`ANTHROPIC_API_KEY` or a Claude Code login) unchanged.
+- Only the optional coach (`insights --coach`) calls the Claude API: it needs
+  `ANTHROPIC_API_KEY` or an `ant auth login` profile.
 
 ## Installation
 
@@ -56,6 +61,8 @@ uv run claude-lens report --by model --since 2026-10-01 --until 2026-10-15
 uv run claude-lens report --project claude-guard --json
 uv run claude-lens cache-doctor --days 30     # prompt-cache misses, causes, avoidable cost
 uv run claude-lens loops --days 30            # repeated calls, error streaks, file churn
+uv run claude-lens insights --days 30         # recommendations and best-practice scorecard
+uv run claude-lens whatif --to claude-sonnet-5-5 --from opus   # reprice Opus traffic on Sonnet
 uv run claude-lens dashboard                  # local web dashboard on http://127.0.0.1:8789
 ```
 
@@ -108,6 +115,34 @@ model's window, and the session's loops.
 
 Rules, thresholds and the penalty formula: [docs/analysis.md](docs/analysis.md).
 
+## Insights
+
+`claude-lens insights` reads everything above (tokens, effort, thinking, subagents, tool calls,
+cache misses, loops, session metadata such as interruptions and permission modes, and CLAUDE.md
+in your project directories) and answers "what should I change?":
+
+- **Model:** Opus or Fable sessions that only read and answered (priced on Sonnet), subagents
+  running on the largest model (priced on Haiku), short API answers from big models.
+- **Effort:** high effort on light work where thinking dominates the output; low effort in
+  sessions that struggled.
+- **Context:** long sessions that kept growing without `/clear`, sessions near the context
+  window.
+- **Workflow:** investigation in the main conversation instead of subagents, multi-file changes
+  without plan mode, rework (repeated edits, error streaks, interruptions), permission prompts.
+- **Setup:** projects without CLAUDE.md, CLAUDE.md over 200 lines.
+- **Cache and API apps:** avoidable cache misses, large prompts without `cache_control`, large
+  `max_tokens` without streaming, batch candidates.
+
+Each recommendation shows the evidence, the sessions, a documentation link, and where possible
+a saving marked as *repriced*, *estimate* or *up to*. A **best-practice scorecard** shows
+pass/warn/fail for practices from the Claude Code and Claude API documentation. `whatif`
+reprices any slice of traffic on another model.
+
+`--coach` adds a short plan written by Claude from the aggregated numbers only (no paths,
+session ids or prompts; `--dry-run` shows the payload), in the language of your choice. Logs show
+cost, not quality: cheaper models and lower effort are presented as experiments. Details, rules
+and thresholds: [docs/insights.md](docs/insights.md).
+
 ## Dashboard
 
 ```bash
@@ -115,11 +150,13 @@ uv run claude-lens dashboard
 ```
 
 Opens on `http://127.0.0.1:8789` and imports changed transcripts when the page loads. One row of
-filters (7/30/90 days or all, project) scopes totals, cost per day stacked by token kind, cost by
-model and project, the cache doctor, loops, and a session view with a prompt-size chart that marks
-every cache miss. It follows the system light or dark mode, works at phone width, and loads
-nothing from the network. It has no authentication: it binds to loopback and answers only
-loopback `Host` headers. Details: [docs/dashboard.md](docs/dashboard.md).
+filters (7/30/90 days or all, project) scopes totals, the recommendations and best-practice
+scorecard (with **Ask Claude for a plan**), cost per day stacked by token kind, cost by model and
+project, the cache doctor, loops, and a session view with a prompt-size chart that marks every
+cache miss. It follows the system light or dark mode, works at phone width, and loads
+nothing from the network. It has no authentication: it binds to loopback, answers only
+loopback `Host` headers, and its POST actions (import, coach) require a header other sites cannot
+send. Details: [docs/dashboard.md](docs/dashboard.md).
 
 ## API proxy
 
@@ -175,6 +212,10 @@ Settings come from environment variables (or `.env`):
 | `LENS_HOST` | `127.0.0.1` | Proxy: listen address |
 | `LENS_PORT` | `8788` | Proxy: listen port |
 | `LENS_ALLOW_NON_LOOPBACK` | `false` | Proxy: allow a non-loopback listen address |
+| `LENS_COACH_MODEL` | `claude-opus-5-5` | Coach: model that writes the plan |
+| `LENS_COACH_EFFORT` | `medium` | Coach: effort level |
+| `LENS_COACH_LANGUAGE` | `English` | Coach: language of the plan |
+| `LENS_COACH_TIMEOUT` | `120` | Coach: API timeout in seconds |
 
 Prices live in [`src/claude_lens/data/pricing.yaml`](src/claude_lens/data/pricing.yaml) (USD per
 million tokens). To change or add a model, copy the file, edit it and point `LENS_PRICING_PATH` at
@@ -238,6 +279,35 @@ Possible agent loops
 └──────────────────────────┴────────────────────────┴───────┴───────┴──────────────────────────┴───────────────────────┘
 ```
 
+`insights` puts the findings in order, with what to do about each:
+
+```bash
+uv run claude-lens insights --no-check-files
+```
+
+```
+Usage profile  2 sessions, 24 requests, $1.38 API-equivalent (Claude Code $1.38, API apps $0.00)
+  Models by cost: claude-sonnet-5-5 74%, claude-opus-5-5 26%
+  Effort by cost: high 74%, medium 26%
+  Thinking share of output: 33%, subagents' share of cost: 0%, cache hit ratio: 49%
+
+1. HIGH Avoidable prompt-cache misses  repriced $0.69
+   Cache misses that a stable prefix or a longer TTL would have prevented cost $0.69. ...
+   → Run `claude-lens cache-doctor` for the misses one by one. Keep tools, system prompt and
+settings stable; for pauses of 5-60 minutes use the 1-hour TTL.
+
+2. HIGH Opus or Fable for sessions that changed no files  repriced $0.14
+   1 session ran the main conversation on the largest models but only read code, answered
+questions or ran commands (no edits): $0.36.
+   → For questions, reviews and exploration, try Sonnet (`/model sonnet`) or the `opusplan`
+alias, and keep Opus for complex architecture and multi-step reasoning. ...
+...
+Best practices
+...
+```
+
+`--no-check-files` skips the CLAUDE.md check, since the example projects do not exist on disk.
+
 Drill into the session, or browse the same data in the dashboard:
 
 ```bash
@@ -277,6 +347,9 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy src
 - **The transcript format is not a stable API.** The importer is tolerant (unknown records are
   skipped, malformed lines counted), but a format change can make fields disappear. Tests use
   record shapes copied from Claude Code 2.1.x transcripts.
+- **Recommendations are heuristics with fixed thresholds.** They read cost and behavior, not
+  the quality of the results: a cheaper model or a lower effort is a hypothesis to test.
+  Savings of different recommendations can overlap.
 - **Cache and loop analysis is heuristic.** Transcripts do not contain the prompt, so the cache
   doctor can name the changed segment only for proxy records; for transcripts it separates TTL
   expiry from everything else. Loop thresholds are fixed and will flag some legitimate work
@@ -294,6 +367,8 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy src
 3. **M3 (done):** `cache-doctor` (miss causes, avoidable cost, the prompt segment that changed),
    `loops` (repeated calls, error streaks, file churn), `session` (timeline, context growth).
 4. **M4 (done):** local web dashboard.
+5. **M5 (done):** `insights` (recommendations, best-practice scorecard, optional LLM coach) and
+   `whatif`.
 
 ## License
 

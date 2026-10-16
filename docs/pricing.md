@@ -16,6 +16,7 @@ models:
     output: 20.00
     cache_read: 0.20     # optional, default 0.1 x input
     fast_multiplier: 2.0 # optional, applied when usage.speed == "fast"
+    context_window: 1000000  # optional, not a price: shows how full the context got
   claude-haiku-5-5:
     input: 0.10
     output: 0.50
@@ -32,6 +33,8 @@ models:
 - A long-context tier applies when the request's prompt tokens (input + cache write + cache read)
   exceed `threshold_tokens`. It replaces every price of that request. When the tier omits
   `cache_read`, it defaults to 0.1x the tier's input price.
+- `context_window` is used by the session view and insights to show context as a share of the
+  window; it does not affect cost.
 - A model missing from the table is not priced: its requests are counted and listed as unpriced
   under the report, and the cost of the affected rows is marked with `*`.
 

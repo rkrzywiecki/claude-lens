@@ -16,6 +16,12 @@ The format is not a documented, stable API. The importer relies on these fields 
 | `message.content[].type == "tool_use"` | Tool names |
 | `message.stop_reason` | Stored as is |
 | `sessionId`, `timestamp`, `cwd`, `isSidechain`, `requestId` | Grouping and metadata |
+| `effort`, `agentId` on assistant records | Effort per response, subagent id |
+| `message.usage.output_tokens_details.thinking_tokens` | Thinking tokens |
+| `entrypoint`, `version` | Session metadata: interface (cli, claude-desktop, sdk-ts, ...) and version |
+| user records: `permissionMode`, `origin.kind`, `interruptedMessageId`, `toolDenialKind` | Permission modes used, prompts typed by a person, interruptions, denied tool calls |
+| assistant records: `isApiErrorMessage`, `attributionSkill`, `attributionAgent` | API errors, skills and subagent types used |
+| system records with `subtype: turn_duration` (`durationMs`) | Active time |
 
 Rules:
 
@@ -29,6 +35,10 @@ Rules:
   root (for example `-home-dev-shop`).
 - Malformed lines are counted and skipped; unknown record types are ignored.
 - Subagent records carry the parent's `sessionId`, so they are reported with the parent session.
+
+A **prompt typed by a person** is a user record whose `origin.kind` is `human`; older transcripts
+without `origin` count user records that are not meta context and carry no tool result.
+Session metadata is stored per transcript file and summed when read.
 
 ## Known gaps
 

@@ -2,13 +2,14 @@
 
 ```
 src/claude_lens/
-├── cli.py                  # Typer: import, report, cache-doctor, loops, session, serve, dashboard
+├── cli.py                  # Typer: import, report, cache-doctor, loops, session, insights,
+│                           #        whatif, serve, dashboard
 ├── config.py               # Settings (env: LENS_*), is_loopback
 ├── models.py               # Usage, RequestRecord, ToolCall, CostBreakdown, ReportRow, Report
 ├── pricing.py              # pricing.yaml -> cost of one request, context window
 ├── data/pricing.yaml       # bundled list prices
 ├── fingerprint.py          # content-free hashes: prompt segments, tool inputs, file targets
-├── store.py                # SQLite store (requests, tool_calls, imported_files)
+├── store.py                # SQLite store (requests, tool_calls, session_meta, imported_files)
 ├── importers/
 │   └── claude_code.py      # Claude Code transcripts -> RequestRecord
 ├── proxy/
@@ -20,6 +21,13 @@ src/claude_lens/
 │   ├── cache.py            # cache doctor: misses, causes, penalties, advice
 │   ├── loops.py            # repeated calls, error streaks, file churn
 │   └── session.py          # one session: timeline, context growth, misses, loops
+├── insights/
+│   ├── stats.py            # per-session statistics the rules work on
+│   ├── rules.py            # recommendations with evidence, savings and documentation links
+│   ├── practices.py        # best-practice scorecard
+│   ├── whatif.py           # reprice recorded tokens on another model
+│   ├── engine.py           # profile + rules + practices -> InsightsReport
+│   └── coach.py            # optional LLM coach (Anthropic SDK), aggregates only
 ├── queries.py              # store + pricing + filters -> reports (shared by CLI and dashboard)
 ├── web/
 │   ├── app.py              # FastAPI dashboard: page + JSON API, loopback Host only
@@ -46,7 +54,10 @@ src/claude_lens/
 5. `analysis/` works on the same records and on tool calls: the cache doctor compares
    consecutive requests of a conversation, loop detection scans tool calls per session, and the
    session view combines both with the request timeline. See [analysis.md](analysis.md).
-6. `queries.py` is the one place that turns filters into those results; `cli.py` renders them
+6. `insights/` builds per-session statistics (models, effort, thinking, tools, edited files,
+   context peak, cache misses, loops, session metadata), runs the rules and the practice checks,
+   and can hand the aggregated result to the coach. See [insights.md](insights.md).
+7. `queries.py` is the one place that turns filters into those results; `cli.py` renders them
    with rich, `web/app.py` serves them as JSON to the dashboard. See [dashboard.md](dashboard.md).
 
 ## Decisions
@@ -70,6 +81,10 @@ src/claude_lens/
 - **One record per response across sources.** The upsert merges an import and a proxy record of
   the same message: the transcript's session, project and timestamp win, measured latency is
   kept, usage comes from the newest write.
+- **Session metadata is stored per transcript file** and summed when read, so re-importing a
+  file never double-counts prompts, interruptions or active time.
+- **Insights are rules first.** Deterministic, offline and testable rules produce the findings;
+  the LLM coach only rewrites them into a plan and sees aggregates, never ids, paths or prompts.
 - **Passive by design.** The proxy forwards first and analyses a copy: the client gets each chunk
   before the tee parses it, and any tee or store error is logged, never raised. A single
   recorder thread owns the SQLite connection, so the request path never waits on the database

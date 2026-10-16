@@ -59,6 +59,8 @@ parsed yet).
 | `stop_reason` | `message_delta` | body |
 | tool names | `content_block_start` of `tool_use` blocks | `tool_use` content blocks |
 | tool calls | `tool_use` block id and name from `content_block_start`, input assembled from `input_json_delta` events, then hashed | `tool_use` content blocks, input hashed |
+| `effort`, `features` | `output_config.effort`; streaming, `max_tokens`, tool count, whether any `cache_control` is set, thinking type, system prompt length (characters) | same |
+| thinking tokens | `usage.output_tokens_details.thinking_tokens` when the API reports it | same |
 | `segments` | hashes of the request's tools, system prompt, cache-relevant settings and each message | same |
 | tool results | `is_error` of the `tool_result` blocks in the request's newest message, applied to the calls recorded before | same |
 | `ttft_ms` | time from receiving the request to the first `content_block_start` event | none |

@@ -57,3 +57,17 @@ in a row, 5 edits of one file per session). Treat findings as pointers to look a
 
 **The dashboard shows old numbers.** Click **Import new transcripts**; proxy records appear as
 soon as they are written.
+
+**`Coach: no Claude API credentials`.** Set `ANTHROPIC_API_KEY`, or run `ant auth login`, in
+the environment where the CLI or dashboard runs. `insights` without `--coach` needs neither.
+
+**`Coach: model ... not found` or an API error.** Check `LENS_COACH_MODEL` (a model id such as
+`claude-opus-5-5`). Rate limits and outages are reported as they come from the API.
+
+**Insights show `effort unknown` or no thinking share.** Older transcripts and models do not
+record effort or thinking tokens; run `claude-lens import --full` after upgrading so the new
+fields are read from every file.
+
+**A recommendation does not fit how I work.** Thresholds are fixed heuristics (see
+[insights.md](insights.md)); treat recommendations as prompts to look, and the savings as the
+price of an experiment.

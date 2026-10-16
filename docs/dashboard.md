@@ -12,6 +12,10 @@ A single local page over the same queries as the CLI. Opening it imports changed
   everything below.
 - **Totals:** API-equivalent cost, requests, cache hit ratio, cost saved by caching, and the
   avoidable cache loss of the sessions the cache doctor lists.
+- **Recommendations:** the `insights` findings with severity, estimated saving, documentation
+  link and the sessions they apply to (click one to open it), the best-practice scorecard, and
+  **Ask Claude for a plan** with a language picker (calls the coach; see
+  [insights.md](insights.md#coach)).
 - **Cost per day**, stacked by token kind (cache read, cache write, output, input); days without
   requests are shown empty. **Show table** lists the same numbers.
 - **Cost by model** and **cost by project** (top seven, the rest folded into "Other").
@@ -29,6 +33,8 @@ scripts, fonts or styles.
 |---|---|
 | `GET /api/summary?days=&project=` | Reports by day, model and project, the cache doctor (top 10 sessions), loops, and the list of projects |
 | `GET /api/sessions/{id}` | `SessionDetail` for a full id or unique prefix; 404 otherwise |
+| `GET /api/insights?days=&project=` | `InsightsReport`: profile, recommendations, practices |
+| `POST /api/coach?days=&project=&lang=` | The coach's plan (`CoachResult`); 503 with the reason when it cannot run |
 | `POST /api/import` | Import statistics |
 | `GET /healthz` | `{"status": "ok"}` |
 
@@ -38,5 +44,8 @@ Paths under the home directory are shown as `~/...`; the project filter accepts 
 
 The dashboard has no authentication. It listens on `127.0.0.1` unless `--allow-non-loopback` is
 given, and it answers only requests whose `Host` header is a loopback name (`127.0.0.1`,
-`localhost`, `[::1]`), so another web page cannot read it through DNS rebinding. All text from
+`localhost`, `[::1]`), so another web page cannot read it through DNS rebinding. `POST`
+requests also need the header `x-lens-request: 1`: a page on another site cannot add a custom
+header without a CORS preflight, which the dashboard never approves, so it cannot start an
+import or a paid coach call. All text from
 the database reaches the page through `textContent`, never as HTML.
