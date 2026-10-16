@@ -1,0 +1,42 @@
+# Dashboard
+
+```bash
+uv run claude-lens dashboard              # http://127.0.0.1:8789
+uv run claude-lens dashboard --port 9000 --db examples/demo.db
+```
+
+A single local page over the same queries as the CLI. Opening it imports changed transcripts
+(the **Import new transcripts** button does it again).
+
+- **Filters**, one row at the top: date range (7, 30, 90 days, all) and project. They scope
+  everything below.
+- **Totals:** API-equivalent cost, requests, cache hit ratio, cost saved by caching, and the
+  avoidable cache loss of the sessions the cache doctor lists.
+- **Cost per day**, stacked by token kind (cache read, cache write, output, input); days without
+  requests are shown empty. **Show table** lists the same numbers.
+- **Cost by model** and **cost by project** (top seven, the rest folded into "Other").
+- **Cache doctor:** advice and the sessions with misses. Click a row to open the session.
+- **Possible agent loops.** Click a row to open the session.
+- **Session:** prompt tokens per request with cache misses (triangles) and context resets
+  (diamonds), and the request timeline. Hover the chart, or focus it and use the arrow keys.
+
+The page follows the system light or dark mode and works at phone width. It loads no external
+scripts, fonts or styles.
+
+## API
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/summary?days=&project=` | Reports by day, model and project, the cache doctor (top 10 sessions), loops, and the list of projects |
+| `GET /api/sessions/{id}` | `SessionDetail` for a full id or unique prefix; 404 otherwise |
+| `POST /api/import` | Import statistics |
+| `GET /healthz` | `{"status": "ok"}` |
+
+Paths under the home directory are shown as `~/...`; the project filter accepts that form.
+
+## Security
+
+The dashboard has no authentication. It listens on `127.0.0.1` unless `--allow-non-loopback` is
+given, and it answers only requests whose `Host` header is a loopback name (`127.0.0.1`,
+`localhost`, `[::1]`), so another web page cannot read it through DNS rebinding. All text from
+the database reaches the page through `textContent`, never as HTML.

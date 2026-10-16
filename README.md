@@ -3,7 +3,9 @@
 `claude-lens` shows what Claude actually costs you, and why. It reads Claude Code session
 transcripts and, optionally, records live API traffic through a pass-through proxy. Each API
 response is stored in a local SQLite database, and reports show API-equivalent cost, token usage
-and the **prompt-cache hit ratio** by day, project, model or session.
+and the **prompt-cache hit ratio** by day, project, model or session. The **cache doctor** finds
+requests that missed the prompt cache and says why and what it cost, **loop detection** flags
+agents repeating themselves, and a local **dashboard** shows it all on one page.
 
 It is the observability companion to [claude-guard](https://github.com/rkrzywiecki/claude-guard).
 claude-guard decides what may pass; claude-lens only watches, never blocks, and never changes
@@ -13,16 +15,17 @@ traffic.
 flowchart LR
     T["~/.claude/projects/**/*.jsonl<br/>(Claude Code transcripts)"] --> I[importers/claude_code.py]
     I -->|"one record per API response<br/>(merged by message id)"| S[(SQLite<br/>~/.claude-lens/lens.db)]
-    S --> R[report.py]
+    S --> R["report.py, analysis/<br/>(cache doctor, loops, sessions)"]
     P[pricing.yaml] --> R
-    R --> C["claude-lens report<br/>(table or --json)"]
+    R --> C["CLI: report, cache-doctor,<br/>loops, session (table or --json)"]
+    R --> D["claude-lens dashboard :8789"]
     CL["Claude Code / SDK<br/>ANTHROPIC_BASE_URL"] --> X["claude-lens serve :8788<br/>(proxy/app.py)"]
     X <-->|"unchanged"| A[api.anthropic.com]
-    X -->|"SSE tee: usage, TTFT, latency<br/>(background thread)"| S
+    X -->|"SSE tee: usage, TTFT, latency,<br/>prompt and tool hashes"| S
 ```
 
-**Status:** milestones M1 (transcript importer and reports) and M2 (API proxy). The cache doctor,
-loop detection and dashboard are planned; see [Roadmap](#roadmap).
+**Status:** milestones M1-M4 are done: transcript importer and reports, API proxy, cache doctor
+and loop detection, dashboard. See [Roadmap](#roadmap).
 
 ## Requirements
 
@@ -51,9 +54,15 @@ uv run claude-lens report --by project --days 7
 uv run claude-lens report --by session --top 10
 uv run claude-lens report --by model --since 2026-10-01 --until 2026-10-15
 uv run claude-lens report --project claude-guard --json
+uv run claude-lens cache-doctor --days 30     # prompt-cache misses, causes, avoidable cost
+uv run claude-lens loops --days 30            # repeated calls, error streaks, file churn
+uv run claude-lens dashboard                  # local web dashboard on http://127.0.0.1:8789
 ```
 
-`report` imports changed transcripts before reporting (`--no-refresh` skips that). The import is
+`claude-lens session <id>` shows one session; ids come from `report --by session` or
+`cache-doctor`, and a unique prefix is enough ([example](#examples)).
+
+Every analysis command imports changed transcripts first (`--no-refresh` skips that). The import is
 incremental: files whose size and modification time did not change are skipped, and records are
 keyed by message id, so importing twice never double-counts. `import --full` re-reads every file.
 
@@ -71,6 +80,47 @@ Columns:
 The **Total** row always covers every request in the selected range, also when `--top` hides some
 rows.
 
+## Cache doctor, loops and sessions
+
+**`cache-doctor`** compares consecutive requests of each conversation (same session and model,
+subagents excluded) and reports a miss when a request reads markedly less from the cache than
+the previous one had cached. Each miss gets a cause:
+
+| Cause | Meaning |
+|---|---|
+| prefix changed | The proxy saw which part of the prompt changed: tool definitions, system prompt, thinking/effort/tool_choice, or an earlier message |
+| TTL expired | The pause was longer than the cache TTL (5 minutes, or 1 hour) |
+| unexplained | Within the TTL with no visible change; from transcripts most prefix changes land here |
+| context reset | The prompt shrank by more than half (compaction, `/clear`); expected, no penalty |
+
+The **penalty** is what re-sending the lost prefix cost minus what reading it would have cost.
+**Avoidable** counts changed prefixes, unexplained misses, and 5-minute entries that expired
+during a pause of up to an hour. The command ends with concrete advice (1-hour TTL or keep-alive,
+the segment that changes most often, missing `cache_control`).
+
+**`loops`** reads tool calls (only a hash of each input is stored, plus the file path for file
+tools) and flags the same call repeated 3+ times, 3+ tool errors in a row, and a file edited 5+
+times in a session. They are signals, not verdicts.
+
+**`session <id>`** takes a session id or a unique prefix and shows the request timeline (prompt,
+cache read and write, output, cost, tools, miss cause), how full the context got relative to the
+model's window, and the session's loops.
+
+Rules, thresholds and the penalty formula: [docs/analysis.md](docs/analysis.md).
+
+## Dashboard
+
+```bash
+uv run claude-lens dashboard
+```
+
+Opens on `http://127.0.0.1:8789` and imports changed transcripts when the page loads. One row of
+filters (7/30/90 days or all, project) scopes totals, cost per day stacked by token kind, cost by
+model and project, the cache doctor, loops, and a session view with a prompt-size chart that marks
+every cache miss. It follows the system light or dark mode, works at phone width, and loads
+nothing from the network. It has no authentication: it binds to loopback and answers only
+loopback `Host` headers. Details: [docs/dashboard.md](docs/dashboard.md).
+
 ## API proxy
 
 Transcripts miss some API calls (Claude Code's side requests, such as session titles) and carry no
@@ -84,8 +134,8 @@ claude
 
 Every `/v1/*` request is forwarded to `https://api.anthropic.com` unchanged (headers, body,
 streaming, errors). For each `POST /v1/messages` response the proxy records usage, model, stop
-reason, tool names, time to the first content block (`ttft_ms`) and total latency
-(`latency_ms`), in the same database the importer uses, so `report` covers both sources and
+reason, tool calls (input hashed), time to the first content block (`ttft_ms`), total latency
+(`latency_ms`) and a hash of each prompt segment (for the cache doctor), in the same database the importer uses, so `report` covers both sources and
 counts a response seen by both once. Recording runs on a background thread and fails open: a
 broken database never affects a response. No prompt content is stored.
 
@@ -157,7 +207,45 @@ API-equivalent cost by session
 Both sessions do the same work. The cache-busting one costs almost three times as much and shows
 negative savings. Session times are shown in your local time zone.
 
-Machine-readable output for scripts and dashboards:
+The cache doctor shows where the difference comes from, and the loop detector finds the file the
+busy session kept rewriting:
+
+```bash
+uv run claude-lens cache-doctor
+uv run claude-lens loops
+```
+
+```
+Prompt-cache misses by session
+┏━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━┓
+┃ Session  ┃ Started          ┃ Project        ┃ Requests ┃ Hit ratio ┃ Misses                     ┃  Lost ┃ Avoidable ┃
+┡━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━┩
+│ 7b2e4d10 │ 2026-10-14 11:00 │ /home/dev/blog │       12 │        0% │ 1 TTL expired, 10          │ $0.76 │     $0.69 │
+│          │                  │                │          │           │ unexplained                │       │           │
+│ 1f0c9a52 │ 2026-10-14 11:00 │ /home/dev/shop │       12 │       95% │ -                          │ $0.00 │     $0.00 │
+└──────────┴──────────────────┴────────────────┴──────────┴───────────┴────────────────────────────┴───────┴───────────┘
+Listed sessions: $0.76 lost to cache misses, $0.69 avoidable.
+...
+Advice:
+  - 10 misses within the TTL have no visible cause in transcripts. Route the client through
+`claude-lens serve` to see which segment changed.
+
+Possible agent loops
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Session                  ┃ Pattern                ┃ Tools ┃ Count ┃ When                     ┃ Target                ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━┩
+│ 7b2e4d10  /home/dev/blog │ file edited repeatedly │ Edit  │     5 │ 2026-10-14 11:16 - 11:32 │ /home/dev/blog/app.py │
+└──────────────────────────┴────────────────────────┴───────┴───────┴──────────────────────────┴───────────────────────┘
+```
+
+Drill into the session, or browse the same data in the dashboard:
+
+```bash
+uv run claude-lens session 7b2e
+uv run claude-lens dashboard --db examples/demo.db
+```
+
+Machine-readable output for scripts:
 
 ```bash
 uv run claude-lens report --by model --json
@@ -189,8 +277,12 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy src
 - **The transcript format is not a stable API.** The importer is tolerant (unknown records are
   skipped, malformed lines counted), but a format change can make fields disappear. Tests use
   record shapes copied from Claude Code 2.1.x transcripts.
-- Prompt contents are never stored: only ids, timestamps, model, token counts, tool names and
-  timings.
+- **Cache and loop analysis is heuristic.** Transcripts do not contain the prompt, so the cache
+  doctor can name the changed segment only for proxy records; for transcripts it separates TTL
+  expiry from everything else. Loop thresholds are fixed and will flag some legitimate work
+  (re-running tests after each fix).
+- Prompt contents are never stored: only ids, timestamps, model, token counts, tool names,
+  timings, short hashes of prompt segments and tool inputs, and the file path of file-tool calls.
 - Prices in the bundled table were checked on 2026-10-16 and will go stale; check them against the
   [pricing page](https://platform.claude.com/docs/en/about-claude/pricing).
 
@@ -199,9 +291,9 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy src
 1. **M1 (done):** transcript importer, SQLite store, `report`.
 2. **M2 (done):** pass-through API proxy (`ANTHROPIC_BASE_URL`) with an SSE tee: usage, latency
    (TTFT, total), every request including side calls.
-3. **M3:** `cache-doctor <session>` (which prefix segment changed between turns: tools, system,
-   messages), loop detection (same tool and input repeated, error streaks), context growth.
-4. **M4:** local web dashboard.
+3. **M3 (done):** `cache-doctor` (miss causes, avoidable cost, the prompt segment that changed),
+   `loops` (repeated calls, error streaks, file churn), `session` (timeline, context growth).
+4. **M4 (done):** local web dashboard.
 
 ## License
 

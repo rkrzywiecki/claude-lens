@@ -58,6 +58,9 @@ parsed yet).
 | usage | `message_start`, updated by every `message_delta` (final output tokens; newer API versions also resend input and cache counts) | `usage` |
 | `stop_reason` | `message_delta` | body |
 | tool names | `content_block_start` of `tool_use` blocks | `tool_use` content blocks |
+| tool calls | `tool_use` block id and name from `content_block_start`, input assembled from `input_json_delta` events, then hashed | `tool_use` content blocks, input hashed |
+| `segments` | hashes of the request's tools, system prompt, cache-relevant settings and each message | same |
+| tool results | `is_error` of the `tool_result` blocks in the request's newest message, applied to the calls recorded before | same |
 | `ttft_ms` | time from receiving the request to the first `content_block_start` event | none |
 | `latency_ms` | time from receiving the request to the end of the stream | time to the end of the body |
 | `request_id` | upstream `request-id` header | same |
@@ -66,8 +69,11 @@ parsed yet).
 Times include the upstream round trip and the time the client takes to read each chunk, but not
 the time the client spent before the proxy received the request. Records have `source = "proxy"`.
 
-No prompt or response content is stored. The request body is parsed only to group sessions (see
-below), on the recorder thread, and dropped.
+No prompt or response content is stored. The request body is parsed on the recorder thread to
+group sessions (see below), to fingerprint the prompt and to read tool results, and then dropped.
+Only short hashes remain: `segments` lets the cache doctor name the part of the prompt that
+changed between two requests (see [analysis.md](analysis.md)), and a tool call keeps a hash of
+its input plus the file path when its input names one (`file_path`, `notebook_path`, `path`).
 
 A stream that breaks or a client that disconnects is still recorded with the usage seen so far:
 input tokens were billed when the stream started.

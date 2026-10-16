@@ -1,4 +1,4 @@
-"""Typer CLI: import, report, cache-doctor, loops, session, serve."""
+"""Typer CLI: import, report, cache-doctor, loops, session, serve, dashboard."""
 
 from __future__ import annotations
 
@@ -254,3 +254,29 @@ def serve(
         log_level=settings.log_level.lower(),
     )
 
+
+@app.command()
+def dashboard(
+    host: Annotated[str, typer.Option(help="Listen address.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(help="Listen port.")] = 8789,
+    allow_non_loopback: AllowNonLoopbackOpt = False,
+    db: DbOpt = None,
+) -> None:
+    """Serve the local web dashboard (imports new transcripts when the page loads)."""
+    import uvicorn
+
+    from claude_lens.web.app import create_dashboard
+
+    settings = get_settings()
+    _check_bind(host, allow_non_loopback, "your usage data")
+    db_path = db or settings.resolved_db_path()
+    _open_store(db_path).close()  # fail early on an unusable database
+    app_ = create_dashboard(
+        settings,
+        open_store=lambda: Store(db_path),
+        pricing=_pricing(),
+        extra_hosts=[] if is_loopback(host) else [host],
+    )
+    shown = f"[{host}]" if ":" in host else host
+    err_console.print(f"claude-lens dashboard on http://{shown}:{port}, reading {db_path}")
+    uvicorn.run(app_, host=host, port=port, log_level=settings.log_level.lower())

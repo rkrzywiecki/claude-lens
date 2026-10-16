@@ -2,12 +2,13 @@
 
 ```
 src/claude_lens/
-├── cli.py                  # Typer: import, report, serve
+├── cli.py                  # Typer: import, report, cache-doctor, loops, session, serve, dashboard
 ├── config.py               # Settings (env: LENS_*), is_loopback
-├── models.py               # Usage, RequestRecord, CostBreakdown, ReportRow, Report (pydantic)
-├── pricing.py              # pricing.yaml -> cost of one request
+├── models.py               # Usage, RequestRecord, ToolCall, CostBreakdown, ReportRow, Report
+├── pricing.py              # pricing.yaml -> cost of one request, context window
 ├── data/pricing.yaml       # bundled list prices
-├── store.py                # SQLite store (requests, imported_files)
+├── fingerprint.py          # content-free hashes: prompt segments, tool inputs, file targets
+├── store.py                # SQLite store (requests, tool_calls, imported_files)
 ├── importers/
 │   └── claude_code.py      # Claude Code transcripts -> RequestRecord
 ├── proxy/
@@ -15,6 +16,14 @@ src/claude_lens/
 │   ├── tee.py              # ResponseTee: parses a copy of the SSE / JSON response
 │   ├── sessions.py         # SessionTracker: headers, metadata session id, prefix hashes (LRU)
 │   └── recorder.py         # Recorder: one background thread, builds and writes records
+├── analysis/
+│   ├── cache.py            # cache doctor: misses, causes, penalties, advice
+│   ├── loops.py            # repeated calls, error streaks, file churn
+│   └── session.py          # one session: timeline, context growth, misses, loops
+├── queries.py              # store + pricing + filters -> reports (shared by CLI and dashboard)
+├── web/
+│   ├── app.py              # FastAPI dashboard: page + JSON API, loopback Host only
+│   └── index.html          # the dashboard (vanilla JS, inline SVG charts, no dependencies)
 ├── report.py               # grouping and totals
 ├── render.py               # rich tables
 └── log_config.py           # structlog JSON on stderr
@@ -34,6 +43,11 @@ src/claude_lens/
    `RequestRecord` with `source="proxy"` and upserts it. See [proxy.md](proxy.md).
 4. `report.py` streams records for the selected range from the store, prices each one with
    `pricing.py` and aggregates by day, project, model or session.
+5. `analysis/` works on the same records and on tool calls: the cache doctor compares
+   consecutive requests of a conversation, loop detection scans tool calls per session, and the
+   session view combines both with the request timeline. See [analysis.md](analysis.md).
+6. `queries.py` is the one place that turns filters into those results; `cli.py` renders them
+   with rich, `web/app.py` serves them as JSON to the dashboard. See [dashboard.md](dashboard.md).
 
 ## Decisions
 
@@ -46,11 +60,13 @@ src/claude_lens/
   long-context tiers.
 - **Timestamps are stored as fixed-width UTC ISO strings**, so SQLite string order equals time
   order. Day grouping uses the local time zone.
-- **No prompt content in the database.** Only ids, timestamps, model, token counts, stop reason and
-  tool names.
+- **No prompt content in the database.** Only ids, timestamps, model, token counts, stop reason,
+  tool names, and short hashes: of each prompt segment (proxy only) and of each tool input. A
+  tool call also keeps the file path its input names, so file churn can be reported.
 - **SQLite with `PRAGMA user_version`.** A database with a newer schema is refused rather than
   misread; an older one is migrated in place, one transaction per version (v2 added the nullable
-  `ttft_ms` and `latency_ms` columns).
+  `ttft_ms` and `latency_ms` columns; v3 added `segments` and the `tool_calls` table, and forgets
+  imported files so the next import reads tool calls from them).
 - **One record per response across sources.** The upsert merges an import and a proxy record of
   the same message: the transcript's session, project and timestamp win, measured latency is
   kept, usage comes from the newest write.

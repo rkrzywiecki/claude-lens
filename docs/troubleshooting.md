@@ -41,3 +41,19 @@ id in `metadata` and no working directory; set `x-lens-session` and `x-lens-proj
 
 **HTTP 502 `claude-lens could not reach the upstream API`.** `LENS_UPSTREAM_URL` is wrong or
 unreachable, or the connection timed out (`LENS_UPSTREAM_TIMEOUT`).
+
+**`session`: `matches N sessions`.** The prefix is not unique; type more characters of the id (the
+message lists the first matches).
+
+**The cache doctor shows many `unexplained` misses.** Transcripts do not contain the prompt, so a
+changed prefix cannot be told apart from an evicted entry. Run the client through
+`claude-lens serve` for a while; misses on proxy records name the changed segment.
+
+**A legitimate workflow shows up in `loops`.** Thresholds are fixed (3 identical calls, 3 errors
+in a row, 5 edits of one file per session). Treat findings as pointers to look at.
+
+**The dashboard answers `400 Invalid host header`.** It accepts only loopback host names. Open
+`http://127.0.0.1:8789` or `http://localhost:8789`, not the machine's network name.
+
+**The dashboard shows old numbers.** Click **Import new transcripts**; proxy records appear as
+soon as they are written.
