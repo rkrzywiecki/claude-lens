@@ -350,7 +350,7 @@ def metric_value(value: float | None, unit: str) -> str:
 
 
 def _delta(change: MetricChange) -> str:
-    if change.delta is None:
+    if change.delta is None or change.verdict == "same":
         return ""
     if change.unit == "usd":
         sign = "+" if change.delta >= 0 else ""
@@ -417,10 +417,11 @@ def render_comparison(console: Console, comparison: Comparison) -> None:
         f"{_local(before.until - timedelta(seconds=1), '%Y-%m-%d')}"
     )
     for c in comparison.changes:
-        marker = change_marker(c)
-        console.print(
-            f"  {c.label}: {metric_value(c.previous, c.unit)} → "
-            f"{metric_value(c.current, c.unit)} {_delta(c)} {marker}".rstrip(),
-            highlight=False,
-        )
+        verdict = {"better": " better", "worse": " worse", "same": " same"}.get(c.verdict, "")
+        parts = [
+            f"  {c.label}: {metric_value(c.previous, c.unit)} → {metric_value(c.current, c.unit)}",
+            _delta(c),
+            f"{change_marker(c)}{verdict}",
+        ]
+        console.print(" ".join(p for p in parts if p).rstrip(), highlight=False)
     console.print()
