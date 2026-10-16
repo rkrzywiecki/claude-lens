@@ -180,6 +180,14 @@ h3 { font-size: 14px; margin: 20px 0 8px; font-weight: 600; }
 .facts { display: flex; flex-wrap: wrap; gap: 4px 24px; color: var(--ink-2); margin: -4px 0 12px; }
 .facts b { color: var(--ink); font-weight: 600; }
 .timeline { max-height: 420px; overflow: auto; }
+.multiples { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px 20px; }
+.multiple { min-width: 0; }
+.multiple-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.multiple-title { color: var(--ink-2); font-size: 13px; }
+.multiple-value { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.change { font-size: 12px; white-space: nowrap; color: var(--muted); }
+.change.better { color: var(--good-text); }
+.change.worse { color: var(--critical); }
 @media (max-width: 900px) {
   .kpis { grid-template-columns: repeat(2, 1fr); }
   .kpi.hero { grid-column: 1 / -1; }
@@ -236,6 +244,16 @@ h3 { font-size: 14px; margin: 20px 0 8px; font-weight: 600; }
       <p class="muted" style="font-size:12px;margin:6px 0 0">Sends only aggregated numbers and the findings above (no paths, session ids or prompts) to the Claude API. Uses ANTHROPIC_API_KEY (a few cents per report) or, without one, your Claude Code login (<code>claude -p</code>, counts against your plan).</p>
       <div class="coach-out" id="coach-out" aria-live="polite"></div>
     </div>
+  </section>
+
+  <section class="card" id="trends-card" style="margin-bottom:16px">
+    <div class="card-head">
+      <h2>Trends</h2>
+      <button type="button" class="btn" id="trends-table-toggle" aria-expanded="false">Show table</button>
+    </div>
+    <p class="muted" id="trends-note" style="margin:-6px 0 12px">Last 8 weeks (local ISO weeks, ignores the date range). Each chart has its own scale.</p>
+    <div class="multiples" id="trends-charts"></div>
+    <div class="scroll" id="trends-table" hidden></div>
   </section>
 
   <section class="card">
@@ -297,7 +315,7 @@ const LOOPS = {
   error_streak: "errors in a row",
   file_churn: "file edited repeatedly",
 };
-const state = { days: "30", project: "", data: null, session: null };
+const state = { days: "30", project: "", data: null, trends: null, session: null };
 
 // -- formatting ---------------------------------------------------------------
 function money(v) {
@@ -577,6 +595,141 @@ function sessionChart(target, timeline) {
   target.replaceChildren(svg);
 }
 
+// -- trends: one small line chart per metric, each with its own single y axis ----------
+// Verdict against the week before: the arrow shows the direction, the color and the word
+// whether that is an improvement (never color alone).
+const CHANGE = { better: "better", worse: "worse", same: "about the same", changed: "changed" };
+function metricValue(v, unit) { return v == null ? "-" : unit === "usd" ? money(v) : pct(v); }
+function metricDelta(c) {
+  if (c.delta == null) return "";
+  if (c.unit === "usd") return (c.delta >= 0 ? "+" : "") + money(c.delta);
+  return (c.delta >= 0 ? "+" : "") + Math.round(c.delta * 100) + " pp";
+}
+function weekShort(w) { return w.week.slice(5) + (w.partial ? "*" : ""); }
+// The denominator behind a share, for the tooltip.
+const BASIS = {
+  kitchen_sink_share: (w) => `${w.kitchen_sink_sessions} of ${w.long_sessions} long sessions`,
+  plan_mode_share: (w) => `${w.planned_large_change_sessions} of ${w.large_change_sessions} multi-file sessions`,
+  rework_share: (w) => `${w.rework_sessions} of ${w.claude_code_sessions} sessions`,
+};
+function changeBadge(c) {
+  if (c.verdict === "n/a") return el("span", { class: "change", text: "no value the week before" });
+  if (c.verdict === "same") return el("span", { class: "change same", text: "= " + CHANGE.same });
+  const arrow = c.delta > 0 ? "↑" : "↓";
+  return el("span", { class: "change " + c.verdict, text: `${arrow} ${metricDelta(c)} · ${CHANGE[c.verdict]}` });
+}
+function weekChange(weeks, i, metric) {
+  const now = weeks[i][metric.id], before = i > 0 ? weeks[i - 1][metric.id] : null;
+  if (now == null || before == null) return null;
+  return now - before;
+}
+
+function multipleChart(target, weeks, metric) {
+  const width = Math.max(target.clientWidth, 220), height = 120;
+  const m = { top: 8, right: 10, bottom: 20, left: 44 };
+  const iw = width - m.left - m.right, ih = height - m.top - m.bottom;
+  const values = weeks.map((w) => w[metric.id]);
+  const known = values.filter((v) => v != null);
+  const max = metric.unit === "share" ? 1 : Math.max(...known, 0);
+  const ticks = metric.unit === "share" ? [0, 0.5, 1] : niceTicks(max, 2);
+  const top = ticks[ticks.length - 1] || 1;
+  const x = (i) => m.left + (weeks.length > 1 ? (i / (weeks.length - 1)) * iw : iw / 2);
+  const y = (v) => m.top + ih - (v / top) * ih;
+  const svg = svgEl("svg", { viewBox: `0 0 ${width} ${height}`, height, role: "img", "aria-label": metric.label + " per week" });
+  for (const t of ticks) {
+    svg.append(svgEl("line", { x1: m.left, x2: width - m.right, y1: y(t), y2: y(t), stroke: t === 0 ? "var(--axis)" : "var(--grid)", "stroke-width": 1 }));
+    svg.append(svgText(m.left - 6, y(t) + 4, metric.unit === "usd" ? money(t) : pct(t), { "text-anchor": "end" }));
+  }
+  // Weeks without a value (no sessions of that kind) break the line rather than drop to 0.
+  // The running week is dashed: it is not over yet.
+  for (let i = 1; i < weeks.length; i++) {
+    if (values[i] == null || values[i - 1] == null) continue;
+    const seg = svgEl("line", { x1: x(i - 1), y1: y(values[i - 1]), x2: x(i), y2: y(values[i]), stroke: "var(--s1)", "stroke-width": 2, "stroke-linecap": "round" });
+    if (weeks[i].partial) seg.setAttribute("stroke-dasharray", "4 4");
+    svg.append(seg);
+  }
+  // Lone points (neighbours without a value) still need a mark.
+  values.forEach((v, i) => {
+    if (v == null) return;
+    const alone = (i === 0 || values[i - 1] == null) && (i === values.length - 1 || values[i + 1] == null);
+    if (alone) svg.append(svgEl("circle", { cx: x(i), cy: y(v), r: 4, fill: "var(--s1)", stroke: "var(--surface)", "stroke-width": 2 }));
+  });
+  svg.append(svgText(m.left, height - 4, weekShort(weeks[0])));
+  svg.append(svgText(width - m.right, height - 4, weekShort(weeks[weeks.length - 1]), { "text-anchor": "end" }));
+  const cross = svgEl("line", { y1: m.top, y2: m.top + ih, stroke: "var(--axis)", "stroke-width": 1, visibility: "hidden" });
+  const dot = svgEl("circle", { r: 4, fill: "var(--s1)", stroke: "var(--surface)", "stroke-width": 2, visibility: "hidden" });
+  const hit = svgEl("rect", { class: "hit", x: m.left - 6, y: m.top, width: iw + 12, height: ih, tabindex: "0", "aria-label": metric.label + ": use arrow keys to step through weeks" });
+  svg.append(cross, dot, hit);
+  let focused = weeks.length - 1;
+  function show(i, event) {
+    const w = weeks[i], v = values[i];
+    cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i)); cross.setAttribute("visibility", "visible");
+    if (v != null) { dot.setAttribute("cx", x(i)); dot.setAttribute("cy", y(v)); dot.setAttribute("visibility", "visible"); }
+    else dot.setAttribute("visibility", "hidden");
+    const rows = [{ color: "var(--s1)", value: metricValue(v, metric.unit), label: metric.label }];
+    const d = weekChange(weeks, i, metric);
+    if (d != null) rows.push({ value: (d >= 0 ? "+" : "") + (metric.unit === "usd" ? money(d) : Math.round(d * 100) + " pp"), label: "vs previous week" });
+    if (BASIS[metric.id]) rows.push({ value: BASIS[metric.id](w), label: "" });
+    rows.push({ value: String(w.sessions), label: "sessions" });
+    const start = new Date(w.since);
+    showTip(event, `${w.week}  from ${isoDay(start)}${w.partial ? "  (running)" : ""}`, rows);
+  }
+  hit.addEventListener("pointermove", (ev) => {
+    const r = svg.getBoundingClientRect();
+    const px = ((ev.clientX - r.left) / r.width) * width;
+    focused = Math.max(0, Math.min(weeks.length - 1, Math.round(((px - m.left) / iw) * (weeks.length - 1))));
+    show(focused, ev);
+  });
+  hit.addEventListener("keydown", (ev) => {
+    if (ev.key !== "ArrowLeft" && ev.key !== "ArrowRight") return;
+    focused = Math.max(0, Math.min(weeks.length - 1, focused + (ev.key === "ArrowRight" ? 1 : -1)));
+    show(focused, ev);
+    ev.preventDefault();
+  });
+  hit.addEventListener("focus", (ev) => show(focused, ev));
+  const hide = () => { hideTip(); cross.setAttribute("visibility", "hidden"); dot.setAttribute("visibility", "hidden"); };
+  hit.addEventListener("pointerleave", hide);
+  hit.addEventListener("blur", hide);
+  target.replaceChildren(svg);
+}
+
+function renderTrends(report) {
+  const charts = document.getElementById("trends-charts");
+  const weeks = report.weeks;
+  document.getElementById("trends-note").textContent =
+    `Last ${weeks.length} weeks (local ISO weeks; * = still running, dashed). Ignores the date range` +
+    (report.project ? `, project ${report.project}` : "") + ". Each chart has its own scale; the change is against the week before.";
+  if (!weeks.some((w) => w.requests)) {
+    charts.replaceChildren(el("div", { class: "empty", text: "No requests in these weeks." }));
+    document.getElementById("trends-table").replaceChildren();
+    return;
+  }
+  const changes = new Map(report.changes.map((c) => [c.id, c]));
+  charts.replaceChildren(...report.metrics.map((metric) => {
+    const c = changes.get(metric.id);
+    const plot = el("div", { class: "chart" });
+    const box = el("div", { class: "multiple", title: metric.description },
+      el("div", { class: "multiple-title", text: metric.label }),
+      el("div", { class: "multiple-head" }, el("span", { class: "multiple-value", text: metricValue(c.current, metric.unit) }), changeBadge(c)),
+      plot);
+    box.plot = plot;
+    return box;
+  }));
+  // Charts measure their container, so draw them once they are in the page.
+  [...charts.children].forEach((box, i) => multipleChart(box.plot, weeks, report.metrics[i]));
+
+  const columns = [{ label: "Metric", value: (r) => r.label }, ...weeks.map((w, i) => ({ label: weekShort(w), num: true, value: (r) => r.cells[i] }))];
+  const rows = report.metrics.map((metric) => ({ label: metric.label, cells: weeks.map((w) => metricValue(w[metric.id], metric.unit)) }));
+  rows.push({ label: "Sessions", cells: weeks.map((w) => String(w.sessions)) });
+  for (const [name, attr] of [["Model", "models"], ["Effort", "efforts"]]) {
+    const keys = [...new Set(weeks.flatMap((w) => w[attr].map((x) => x.key)))].sort();
+    for (const key of keys) {
+      rows.push({ label: `${name} ${key}, share of cost`, cells: weeks.map((w) => { const hit = w[attr].find((x) => x.key === key); return hit ? pct(hit.share) : "-"; }) });
+    }
+  }
+  document.getElementById("trends-table").replaceChildren(table(columns, rows));
+}
+
 // -- tables --------------------------------------------------------------------
 function table(columns, rows, onClick) {
   const head = el("tr", {}, ...columns.map((c) => el("th", { class: c.num ? "num" : "", text: c.label })));
@@ -822,13 +975,16 @@ async function load() {
   if (state.days) params.set("days", state.days);
   if (state.project) params.set("project", state.project);
   try {
-    const [res, ins] = await Promise.all([fetch("/api/summary?" + params), fetch("/api/insights?" + params)]);
-    if (!res.ok) throw new Error(res.status + " " + res.statusText);
-    if (!ins.ok) throw new Error(ins.status + " " + ins.statusText);
+    const trendParams = new URLSearchParams();
+    if (state.project) trendParams.set("project", state.project);
+    const [res, ins, tr] = await Promise.all([fetch("/api/summary?" + params), fetch("/api/insights?" + params), fetch("/api/trends?" + trendParams)]);
+    for (const r of [res, ins, tr]) if (!r.ok) throw new Error(r.status + " " + r.statusText);
     state.data = await res.json();
     fillProjects(state.data.projects);
     renderSummary(state.data);
     renderInsights(await ins.json());
+    state.trends = await tr.json();
+    renderTrends(state.trends);
     setStatus("");
   } catch (err) {
     setStatus("Could not load data: " + err.message);
@@ -869,11 +1025,18 @@ document.getElementById("day-table-toggle").addEventListener("click", (e) => {
   e.target.setAttribute("aria-expanded", String(!t.hidden));
   e.target.textContent = t.hidden ? "Show table" : "Hide table";
 });
+document.getElementById("trends-table-toggle").addEventListener("click", (e) => {
+  const t = document.getElementById("trends-table");
+  t.hidden = !t.hidden;
+  e.target.setAttribute("aria-expanded", String(!t.hidden));
+  e.target.textContent = t.hidden ? "Show table" : "Hide table";
+});
 let resizeTimer;
 window.addEventListener("resize", () => {
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(() => {
     if (state.data) renderSummary(state.data);
+    if (state.trends) renderTrends(state.trends);
     if (state.session && !document.getElementById("session").hidden) sessionChart(document.getElementById("session-chart"), state.session.timeline);
   }, 150);
 });
