@@ -39,7 +39,7 @@ proxy, cache doctor and loop detection, dashboard, insights with the coach, tren
 and live nudges. The Claude Code plugin passes `claude plugin validate`; it has been exercised
 by tests and from the shell, not yet in an interactive Claude Code session.
 
-Documentation: [architecture](docs/architecture.md), [importer](docs/importers.md),
+Documentation: **[tutorial](docs/tutorial.md)**, [architecture](docs/architecture.md), [importer](docs/importers.md),
 [pricing](docs/pricing.md), [proxy](docs/proxy.md), [cache doctor, loops and sessions](docs/analysis.md),
 [insights and coach](docs/insights.md), [trends](docs/trends.md), [outcomes](docs/outcomes.md),
 [dashboard](docs/dashboard.md), [live nudges](docs/nudges.md),
@@ -76,6 +76,55 @@ claude-lens --help
 
 `uv tool install --reinstall .` picks up later changes. Inside the checkout, `uv run claude-lens`
 works without installing.
+
+## Quick start
+
+New to claude-lens? The [step-by-step tutorial](docs/tutorial.md) walks through everything
+below on bundled sample data first, with the output you should see. The short version:
+
+1. **Try it on the sample data** (no history needed): two sessions doing the same work, one
+   costing three times more because it never hit the prompt cache.
+
+   ```bash
+   export LENS_TRANSCRIPTS_DIR=examples/transcripts LENS_DB_PATH=examples/demo.db
+   claude-lens report --by session
+   claude-lens cache-doctor
+   ```
+
+2. **Switch to your own sessions** and see where the money goes:
+
+   ```bash
+   unset LENS_TRANSCRIPTS_DIR LENS_DB_PATH
+   claude-lens report --by project --days 7
+   ```
+
+3. **Get recommendations**, and optionally a plan written by Claude in your language (uses
+   `ANTHROPIC_API_KEY`, or your Claude Code login when there is none):
+
+   ```bash
+   claude-lens insights --days 30
+   claude-lens insights --days 30 --coach --lang Polish
+   ```
+
+4. **Browse it all** on a local page at `http://127.0.0.1:8789`:
+
+   ```bash
+   claude-lens dashboard
+   ```
+
+5. **Get nudged inside Claude Code**: a status line with context, cost and cache state, and a
+   one-time hint to `/clear` or `/compact` when a session grows too long:
+
+   ```bash
+   claude-lens install --user
+   ```
+
+6. **A week or two later, check that it helped**:
+
+   ```bash
+   claude-lens trends --weeks 8
+   claude-lens insights --days 14 --compare
+   ```
 
 ## Usage
 
